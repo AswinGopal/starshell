@@ -1,0 +1,83 @@
+[package]
+name = "starshell"
+version = "0.1.0"
+authors = ["Starshell Contributors"]
+build = "build.rs"
+edition = "2024"
+license = "ISC"
+# Note: MSRV is only intended as a hint, and only the latest version is officially supported.
+rust-version = "1.95"
+description = "A minimal, fast prompt with a hand-picked set of modules, built for Linux."
+
+[features]
+default = []
+config-schema = ["schemars"]
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive", "cargo", "unicode"] }
+clap_complete = "4.6.7"
+clap_complete_nushell = "4.6.0"
+dirs = "6.0.0"
+dunce = "1.0.5"
+# default feature restriction addresses https://github.com/starship/starship/issues/4251
+gix = { version = "0.85.0", default-features = false, features = ["max-performance-safe", "revision", "zlib-rs", "status", "sha1", "sha256"] }
+indexmap = { version = "2.14.0", features = ["serde"] }
+jiff = { version = "0.2.32", features = ["serde"] }
+log = { version = "0.4.33", features = ["std"] }
+nu-ansi-term = "0.50.3"
+open = "5.4.0"
+# update os module config and tests when upgrading os_info
+os_info = { version = "3.15.0", features = ["schemars"] }
+# for efficient shared state between `git_status` and `git_metrics`, allowing parallel printing. This is for poison-free locks.
+parking_lot = "0.12.5"
+path-slash = "0.2.1"
+pest = "2.8.7"
+pest_derive = "2.8.7"
+process_control = "5.2.0"
+rand = "0.10.2"
+rayon = "1.12.0"
+regex = { version = "1.13.0", default-features = false, features = ["perf", "std", "unicode-perl"] }
+rust-ini = "0.21.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+shadow-rs = { version = "2.0.0", default-features = false, features = ["build"] }
+shell-words = "1.1.1"
+strsim = "0.11.1"
+tempfile = "3.27.0"
+terminal_size = "0.4.4"
+toml = { version = "1.1.2", features = ["preserve_order"] }
+toml_edit = "0.25.12"
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.2"
+urlencoding = "2.1.3"
+versions = "7.0.0"
+which = "8.0.4"
+whoami = { version = "2.1.2", default-features = false, features = ["std", "wasi-wasite"] }
+
+[dependencies.schemars]
+version = "1.2.1"
+optional = true
+features = ["preserve_order", "indexmap2"]
+
+[target.'cfg(not(windows))'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["feature", "fs", "user"] }
+
+[build-dependencies]
+shadow-rs = { version = "2.0.0", default-features = false, features = ["build"] }
+
+[dev-dependencies]
+mockall = "=0.15.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+
+[profile.bench]
+codegen-units = 16
+lto = "thin"
+strip = false
+
+[lints.clippy]
+use_self = "warn"

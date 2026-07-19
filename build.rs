@@ -1,0 +1,7 @@
+use shadow_rs::SdResult;
+
+fn main() -> SdResult<()> {
+    shadow_rs::ShadowBuilder::builder().build()?;
+
+    Ok(())
+}
