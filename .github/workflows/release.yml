@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Must already exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: resolve_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve_tag.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')"
+          TAG="${{ steps.resolve_tag.outputs.tag }}"
+          TAG_VERSION="${TAG#v}"
+
+          if [ "${TAG_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::Tag '${TAG}' (version '${TAG_VERSION}') does not match Cargo.toml version '${CARGO_VERSION}'"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve_tag.outputs.tag }}
+          generate_release_notes: true
