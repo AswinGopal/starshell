@@ -190,7 +190,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
             .info
             .filter(|StructInfo { name, .. }| name == &"StarshipRootConfig")
             .and(self.current_key)
-            .is_some_and(|key| ALL_MODULES.contains(&key) || key == "custom" || key == "env_var")
+            .is_some_and(|key| ALL_MODULES.contains(&key) || key == "custom")
         {
             return visitor.visit_none();
         }

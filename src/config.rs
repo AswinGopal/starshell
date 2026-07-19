@@ -243,10 +243,6 @@ impl StarshipConfig {
     pub fn get_custom_modules(&self) -> Option<&toml::value::Table> {
         self.get_config(&["custom"])?.as_table()
     }
-    /// Get the table of all the registered `env_var` modules, if any
-    pub fn get_env_var_modules(&self) -> Option<&toml::value::Table> {
-        self.get_config(&["env_var"])?.as_table()
-    }
 }
 
 /// Deserialize a style string in the starship format with serde

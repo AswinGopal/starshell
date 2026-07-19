@@ -349,15 +349,10 @@ fn handle_module<'a>(
         if !context.is_module_disabled_in_config(module) {
             modules.extend(modules::handle(module, context));
         }
-    } else if module.starts_with("custom.") || module.starts_with("env_var.") {
-        // custom.<name> and env_var.<name> are special cases and handle disabled modules themselves
+    } else if module.starts_with("custom.") {
+        // custom.<name> is a special case and handles disabled modules itself
         modules.extend(modules::handle(module, context));
-    } else if matches!(module, "custom" | "env_var") {
-        // env var is a spacial case and may contain a top-level module definition
-        if module == "env_var" {
-            modules.extend(modules::handle(module, context));
-        }
-
+    } else if module == "custom" {
         // Write out all custom modules, except for those that are explicitly set
         modules.extend(
             context
@@ -369,10 +364,7 @@ fn handle_module<'a>(
                 .collect::<Vec<_>>()
                 .par_iter()
                 .filter_map(|(child, config)| {
-                    // Some env var keys may be part of a top-level module definition
-                    if module == "env_var" && !config.is_table() {
-                        None
-                    } else if should_add_implicit_module(module, child, config, module_list) {
+                    if should_add_implicit_module(module, child, config, module_list) {
                         Some(modules::handle(&format!("{module}.{child}"), context))
                     } else {
                         None
@@ -658,27 +650,6 @@ mod test {
     }
 
     #[test]
-    fn env_expands() {
-        let mut context = default_context().set_config(toml::toml! {
-                format="$env_var"
-                [env_var]
-                format="$env_value"
-                variable = "a"
-                [env_var.b]
-                format="$env_value"
-                [env_var.c]
-                format="$env_value"
-        });
-        context.env.insert("a", "a".to_string());
-        context.env.insert("b", "b".to_string());
-        context.env.insert("c", "c".to_string());
-
-        let expected = String::from("\nabc");
-        let actual = get_prompt(&context);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
     fn custom_mixed() -> std::io::Result<()> {
         let dir = tempfile::tempdir()?;
         let mut context = default_context().set_config(toml::toml! {
@@ -699,30 +670,6 @@ mod test {
         let actual = get_prompt(&context);
         assert_eq!(expected, actual);
         dir.close()
-    }
-
-    #[test]
-    fn env_mixed() {
-        let mut context = default_context().set_config(toml::toml! {
-                format="${env_var.c}$env_var${env_var.b}"
-                [env_var]
-                format="$env_value"
-                variable = "d"
-                [env_var.a]
-                format="$env_value"
-                [env_var.b]
-                format="$env_value"
-                [env_var.c]
-                format="$env_value"
-        });
-        context.env.insert("a", "a".to_string());
-        context.env.insert("b", "b".to_string());
-        context.env.insert("c", "c".to_string());
-        context.env.insert("d", "d".to_string());
-
-        let expected = String::from("\ncdab");
-        let actual = get_prompt(&context);
-        assert_eq!(expected, actual);
     }
 
     #[test]

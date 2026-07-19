@@ -4,7 +4,6 @@ use serde::{self, Deserialize, Serialize};
 pub mod character;
 pub mod custom;
 pub mod directory;
-pub mod env_var;
 pub mod git_branch;
 pub mod git_commit;
 pub mod git_state;
@@ -37,8 +36,6 @@ pub struct FullConfig<'a> {
     character: character::CharacterConfig<'a>,
     #[serde(borrow)]
     directory: directory::DirectoryConfig<'a>,
-    #[serde(borrow)]
-    env_var: IndexMap<String, env_var::EnvVarConfig<'a>>,
     #[serde(borrow)]
     git_branch: git_branch::GitBranchConfig<'a>,
     #[serde(borrow)]

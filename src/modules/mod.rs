@@ -2,7 +2,6 @@
 mod character;
 pub mod custom;
 mod directory;
-mod env_var;
 mod git_branch;
 mod git_commit;
 mod git_state;
@@ -36,9 +35,6 @@ pub fn handle<'a>(module: &str, context: &'a Context) -> Option<Module<'a>> {
             "python" => python::module(context),
             "time" => time::module(context),
             "username" => username::module(context),
-            env if env.starts_with("env_var.") => {
-                env_var::module(env.strip_prefix("env_var."), context)
-            }
             custom if custom.starts_with("custom.") => {
                 // SAFETY: We just checked that the module starts with "custom."
                 custom::module(custom.strip_prefix("custom.").unwrap(), context)
