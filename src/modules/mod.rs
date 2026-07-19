@@ -8,6 +8,7 @@ mod git_commit;
 mod git_state;
 pub mod git_status;
 mod line_break;
+mod os;
 mod python;
 mod time;
 mod username;
@@ -31,6 +32,7 @@ pub fn handle<'a>(module: &str, context: &'a Context) -> Option<Module<'a>> {
             "git_state" => git_state::module(context),
             "git_status" => git_status::module(context),
             "line_break" => line_break::module(context),
+            "os" => os::module(context),
             "python" => python::module(context),
             "time" => time::module(context),
             "username" => username::module(context),
@@ -73,6 +75,7 @@ pub fn description(module: &str) -> &'static str {
         "git_state" => "The current git operation, and it's progress",
         "git_status" => "Symbol representing the state of the repo",
         "line_break" => "Separates the prompt into two lines",
+        "os" => "The current operating system",
         "python" => "The currently installed version of Python",
         "time" => "The current local time",
         "username" => "The active user's username",

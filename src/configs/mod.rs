@@ -10,6 +10,7 @@ pub mod git_commit;
 pub mod git_state;
 pub mod git_status;
 pub mod line_break;
+pub mod os;
 pub mod python;
 mod starship_root;
 pub mod time;
@@ -47,6 +48,8 @@ pub struct FullConfig<'a> {
     #[serde(borrow)]
     git_status: git_status::GitStatusConfig<'a>,
     line_break: line_break::LineBreakConfig,
+    #[serde(borrow)]
+    os: os::OSConfig<'a>,
     #[serde(borrow)]
     python: python::PythonConfig<'a>,
     #[serde(borrow)]

@@ -14,6 +14,7 @@ pub const ALL_MODULES: &[&str] = &[
     "git_state",
     "git_status",
     "line_break",
+    "os",
     "python",
     "time",
     "username",

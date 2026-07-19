@@ -49,6 +49,7 @@ pub const PROMPT_ORDER: &[&str] = &[
     "custom",
     "line_break",
     "time",
+    "os",
     "character",
 ];
 
