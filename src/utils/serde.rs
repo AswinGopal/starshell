@@ -490,8 +490,11 @@ mod test {
 
     #[test]
     fn test_deserialize_unknown_root_module() {
+        // A key that isn't a StarshipRootConfig field, but is a real module name
+        // in this build's ALL_MODULES, should be silently tolerated at the root
+        // level (it's a valid module table, just not a root-config field).
         let value = toml::toml! {
-            [rust]
+            [git_commit]
             disabled = true
         };
         let deserializer = ValueDeserializer::new(&value);

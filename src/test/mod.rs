@@ -5,7 +5,6 @@ use crate::{
     utils::{CommandOutput, create_command},
 };
 use log::{Level, LevelFilter};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +18,6 @@ static FIXTURE_DIR: LazyLock<PathBuf> =
 static GIT_FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| FIXTURE_DIR.join("git-repo.bundle"));
 static GIT_SHA256_FIXTURE: LazyLock<PathBuf> =
     LazyLock::new(|| FIXTURE_DIR.join("git-repo-sha256.bundle"));
-static HG_FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| FIXTURE_DIR.join("hg-repo.bundle"));
 
 static LOGGER: Once = Once::new();
 
@@ -200,10 +198,7 @@ impl<'a> From<ModuleRenderer<'a>> for Context<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FixtureProvider {
-    Fossil,
     Git { reftable: bool, bare: bool },
-    Hg,
-    Pijul,
 }
 
 pub const COMMON_GIT_PROVIDERS: &[FixtureProvider] = &[
@@ -250,22 +245,6 @@ pub fn fixture_repo(provider: FixtureProvider) -> io::Result<TempDir> {
 
 pub fn fixture_repo_with_hash(provider: FixtureProvider, sha256: bool) -> io::Result<TempDir> {
     match provider {
-        FixtureProvider::Fossil => {
-            let checkout_db = if cfg!(windows) {
-                "_FOSSIL_"
-            } else {
-                ".fslckout"
-            };
-            let path = tempfile::tempdir()?;
-            fs::create_dir(path.path().join("subdir"))?;
-            fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(path.path().join(checkout_db))?
-                .sync_all()?;
-            Ok(path)
-        }
         FixtureProvider::Git { reftable, bare } => {
             let path = tempfile::tempdir()?;
 
@@ -298,23 +277,6 @@ pub fn fixture_repo_with_hash(provider: FixtureProvider, sha256: bool) -> io::Re
                     .output()?;
             }
 
-            Ok(path)
-        }
-        FixtureProvider::Hg => {
-            let path = tempfile::tempdir()?;
-
-            create_command("hg")?
-                .current_dir(path.path())
-                .arg("clone")
-                .arg(HG_FIXTURE.as_os_str())
-                .arg(path.path())
-                .output()?;
-
-            Ok(path)
-        }
-        FixtureProvider::Pijul => {
-            let path = tempfile::tempdir()?;
-            fs::create_dir(path.path().join(".pijul"))?;
             Ok(path)
         }
     }

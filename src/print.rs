@@ -507,7 +507,6 @@ pub fn print_schema() {
 mod test {
     use super::*;
     use crate::test::default_context;
-    use crate::utils;
 
     const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
