@@ -254,6 +254,14 @@
     {
       "area": "adding a module back",
       "risk": "A module's Cargo.toml dependency may already be present for an unrelated reason (os_info was already required by bug_report.rs before the os module was re-added). Check the dependency_map before assuming a crate needs to be added; check it again before assuming one should be removed."
+    },
+    {
+      "area": "#[allow(dead_code)] as a hiding place",
+      "risk": "An #[allow(dead_code)] does not mean the code is legitimately used elsewhere for a reason clippy can't see -- it can just as easily mean a function has been orphaned and nobody removed the allow along with its last caller. Precedent: utils/mod.rs had a #[cfg(test)]/#[cfg(not(test))] pair of context_path() functions, each individually marked #[allow(dead_code)], with zero callers anywhere in the tree (test or production) once verified by grep. The allow had been silently hiding this since it predates this fork. Do not treat the presence of #[allow(dead_code)] as evidence the code is needed -- grep for real callers before trusting it, the same way you would for any other function."
+    },
+    {
+      "area": "auditing suppressions generally",
+      "risk": "Before trusting the tree, grep for every #[allow(...)], #![allow(...)], and #[warn(...)] site and check each individually -- do not assume a suppression is still contextually valid just because it was valid when written. Most in this codebase are legitimate and narrowly scoped (test-only struct fields with no reader by design, generated-code lint false positives from pest_derive, platform-conditional numeric conversions with an inline comment explaining why). One category is worth extra scrutiny every time: any #[allow(dead_code)] on a pub fn, since that is exactly the lint that would otherwise catch an orphaned function left over from a deleted module or a refactor. The one legitimate exception to the disallowed-methods ban on std::process::Command::new lives in utils/mod.rs's create_command() -- confirm it remains the *only* call site (grep 'Command::new') if you ever touch process-spawning code, since that single exception is what makes the project-wide ban in clippy.toml meaningful."
     }
   ]
 }
