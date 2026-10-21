@@ -33,7 +33,7 @@ pub fn module<'a>(context: &'a Context) -> Option<Module<'a>> {
     let config: GitStatusConfig = GitStatusConfig::try_load(module.config);
 
     // Return None if not in git repository
-    let repo = context.get_repo().ok()?;
+    let repo = context.get_git_repo().ok()?;
 
     if repo.open().workdir().is_none() {
         log::debug!("This is a bare repository, git_status is not applicable");
@@ -191,7 +191,7 @@ pub fn module<'a>(context: &'a Context) -> Option<Module<'a>> {
 
 struct GitStatusInfo<'a> {
     context: &'a Context<'a>,
-    repo: &'a context::Repo,
+    repo: &'a context::GitRepo,
     config: GitStatusConfig<'a>,
     repo_status: OnceLock<Option<Arc<RepoStatus>>>,
     stashed_count: OnceLock<Option<usize>>,
@@ -200,7 +200,7 @@ struct GitStatusInfo<'a> {
 impl<'a> GitStatusInfo<'a> {
     pub fn load(
         context: &'a Context,
-        repo: &'a context::Repo,
+        repo: &'a context::GitRepo,
         config: GitStatusConfig<'a>,
     ) -> Self {
         Self {
@@ -304,7 +304,7 @@ impl<'a> GitStatusInfo<'a> {
 /// The trashing is only expected when tests run though, as otherwise one path is used with a variety of modules.
 pub fn get_static_repo_status(
     context: &Context,
-    repo: &context::Repo,
+    repo: &context::GitRepo,
     config: &GitStatusConfig,
 ) -> Option<Arc<RepoStatus>> {
     static REPO_STATUS: parking_lot::Mutex<Option<(Arc<RepoStatus>, PathBuf)>> =
@@ -320,30 +320,19 @@ pub fn get_static_repo_status(
     status.as_ref().map(|(status, _)| Arc::clone(status))
 }
 
-pub fn uses_reftables(repo: &gix::Repository) -> bool {
-    repo.config_snapshot()
-        .string("extensions.refstorage")
-        .is_some_and(|kind| kind.as_ref() == "reftable")
-}
-
 /// Gets the number of files in various git states (staged, modified, deleted, etc...)
 fn get_repo_status(
     context: &Context,
-    repo: &context::Repo,
+    repo: &context::GitRepo,
     config: &GitStatusConfig,
 ) -> Option<RepoStatus> {
     log::debug!("New repo status created");
 
     let mut repo_status = RepoStatus::default();
     let gix_repo = repo.open();
-    // TODO: remove this special case once `gitoxide` can handle sparse indices for tree-index comparisons.
     let has_untracked = !config.untracked.is_empty();
     let git_config = gix_repo.config_snapshot();
-    if config.use_git_executable
-        || repo.fs_monitor_value_is_true
-        || uses_reftables(&repo.repo.to_thread_local())
-        || gix_repo.index_or_empty().ok()?.is_sparse()
-    {
+    if repo.use_git_executable(config.use_git_executable)? {
         let mut args = vec!["status", "--porcelain=2"];
 
         // for performance reasons, only pass flags if necessary...
@@ -453,8 +442,9 @@ fn get_repo_status(
                     .ok()
             })
         {
-            let output = repo.exec_git(
+            let output = repo.exec_git_with_required_trust(
                 context,
+                gix::sec::Trust::Reduced,
                 ["for-each-ref", "--format", "%(upstream) %(upstream:track)"]
                     .into_iter()
                     .map(ToOwned::to_owned)
@@ -576,7 +566,7 @@ fn sanitize_rename_tracking(mut config: gix::diff::Rewrites) -> gix::diff::Rewri
     config
 }
 
-fn get_stashed_count(repo: &context::Repo) -> Option<usize> {
+fn get_stashed_count(repo: &context::GitRepo) -> Option<usize> {
     let repo = repo.open();
     let reference = match repo.try_find_reference("refs/stash") {
         // Only proceed if the found reference has the expected name (not tags/refs/stash etc.)
@@ -936,6 +926,32 @@ pub mod tests {
 
         assert_eq!(expected, actual);
         repo_dir.close()
+    }
+
+    #[test]
+    fn reduced_trust_falls_back_to_gix_with_upstream_tracking() -> io::Result<()> {
+        for use_git_executable in [false, true] {
+            // The shared status cache is keyed by path, so each config needs its own repo.
+            let repo_dir = fixture_repo(COMMON_GIT_PROVIDERS[0])?;
+            behind(repo_dir.path())?;
+            fs::write(repo_dir.path().join("untracked-file"), "untracked\n")?;
+
+            let actual = ModuleRenderer::new("git_status")
+                .config(toml::toml! {
+                    [git_status]
+                    format = "$ahead_behind$untracked"
+                    behind = "behind:$count "
+                    untracked = "untracked:$count"
+                    use_git_executable = use_git_executable
+                })
+                .path(repo_dir.path())
+                .git_trust(gix::sec::Trust::Reduced)
+                .collect();
+
+            assert_eq!(actual.as_deref(), Some("behind:1 untracked:1"));
+            repo_dir.close()?;
+        }
+        Ok(())
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::utils;
 use clap::Parser;
 use gix::{
     Repository, ThreadSafeRepository,
-    sec::{self as git_sec, trust::DefaultForLevel},
+    sec::{self as git_sec, Trust as TrustLevel, trust::DefaultForLevel},
     state as git_state,
 };
 #[cfg(test)]
@@ -55,7 +55,7 @@ pub struct Context<'a> {
     pub properties: Properties,
 
     /// Private field to store Git information for modules who need it
-    repo: OnceLock<Result<Repo, Box<gix::discover::Error>>>,
+    git_repo: OnceLock<Result<GitRepo, Box<gix::discover::Error>>>,
 
     /// The shell the user is assumed to be running
     pub shell: Shell,
@@ -172,7 +172,7 @@ impl<'a> Context<'a> {
             current_dir,
             logical_dir,
             dir_contents: OnceLock::new(),
-            repo: OnceLock::new(),
+            git_repo: OnceLock::new(),
             shell,
             target,
             width,
@@ -318,9 +318,9 @@ impl<'a> Context<'a> {
     }
 
     /// Will lazily get repo root and branch when a module requests it.
-    pub fn get_repo(&self) -> Result<&Repo, &gix::discover::Error> {
-        self.repo
-            .get_or_init(|| -> Result<Repo, Box<gix::discover::Error>> {
+    pub fn get_git_repo(&self) -> Result<&GitRepo, &gix::discover::Error> {
+        self.git_repo
+            .get_or_init(|| -> Result<GitRepo, Box<gix::discover::Error>> {
                 // custom open options
                 let mut git_open_opts_map =
                     git_sec::trust::Mapping::<gix::open::Options>::default();
@@ -366,10 +366,8 @@ impl<'a> Context<'a> {
                     };
 
                 let repository = shared_repo.to_thread_local();
-                log::trace!(
-                    "Found git repo: {repository:?}, (trust: {:?})",
-                    repository.git_dir_trust()
-                );
+                let trust = repository.git_dir_trust();
+                log::trace!("Found git repo: {repository:?}, (trust: {trust:?})");
 
                 let branch = get_current_branch(&repository);
                 let remote =
@@ -381,7 +379,7 @@ impl<'a> Context<'a> {
                     .boolean("core.fsmonitor")
                     .unwrap_or(false);
 
-                Ok(Repo {
+                Ok(GitRepo {
                     repo: shared_repo,
                     branch: branch.map(|b| b.shorten().to_string()),
                     workdir: repository.workdir().map(PathBuf::from),
@@ -389,10 +387,18 @@ impl<'a> Context<'a> {
                     state: repository.state(),
                     remote,
                     fs_monitor_value_is_true,
+                    trust,
                 })
             })
             .as_ref()
             .map_err(std::convert::AsRef::as_ref)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_git_trust(&mut self, trust: TrustLevel) {
+        // Override only Starship's command policy, leaving discovery and gix permissions intact.
+        self.get_git_repo().expect("test repository must open");
+        self.git_repo.get_mut().unwrap().as_mut().unwrap().trust = trust;
     }
 
     pub fn dir_contents(&self) -> Result<&DirContents, &std::io::Error> {
@@ -709,7 +715,7 @@ impl DirContents {
     }
 }
 
-pub struct Repo {
+pub struct GitRepo {
     pub repo: ThreadSafeRepository,
 
     /// If `current_dir` is a git repository or is contained within one,
@@ -728,28 +734,75 @@ pub struct Repo {
     pub state: Option<git_state::InProgress>,
 
     /// Remote repository
-    pub remote: Option<Remote>,
+    pub remote: Option<GitRemote>,
 
     /// Contains `true` if the value of `core.fsmonitor` is set to `true`.
     /// If not `true`, `fsmonitor` is explicitly disabled in git commands.
     pub(crate) fs_monitor_value_is_true: bool,
+
+    /// The trust level of the repository's `.git` directory.
+    pub trust: TrustLevel,
 }
 
-impl Repo {
+impl GitRepo {
     /// Opens the associated git repository.
     pub fn open(&self) -> Repository {
         self.repo.to_thread_local()
     }
 
+    pub(crate) fn uses_reftables(&self) -> bool {
+        self.open()
+            .config_snapshot()
+            .string("extensions.refstorage")
+            .is_some_and(|kind| kind.as_ref() == "reftable")
+    }
+
+    /// Select the Git executable for status only in fully trusted repositories.
+    pub(crate) fn use_git_executable(&self, enabled: bool) -> Option<bool> {
+        // TODO: remove the sparse-index fallback once gitoxide supports tree-index comparisons.
+        let use_git = enabled
+            || self.fs_monitor_value_is_true
+            || self.uses_reftables()
+            || self.open().index_or_empty().ok()?.is_sparse();
+        if use_git && self.trust != TrustLevel::Full {
+            log::info!(
+                "Not using the Git executable for status because repository trust is reduced."
+            );
+            return Some(false);
+        }
+        Some(use_git)
+    }
+
     /// Wrapper to execute external git commands.
     /// Handles adding the appropriate `--git-dir` and `--work-tree` flags to the command.
     /// Also handles additional features required for security, such as disabling `fsmonitor`.
+    /// Requires full repository trust.
     /// At this time, mocking is not supported.
     pub fn exec_git<T: AsRef<OsStr> + Debug>(
         &self,
         context: &Context,
         git_args: impl IntoIterator<Item = T>,
     ) -> Option<CommandOutput> {
+        self.exec_git_with_required_trust(context, TrustLevel::Full, git_args)
+    }
+
+    /// Execute a Git command only if the repository meets the required trust level.
+    /// Callers allowing reduced trust must ensure the command and its arguments cannot
+    /// execute repository-configured external commands (such as filters or hooks).
+    pub fn exec_git_with_required_trust<T: AsRef<OsStr> + Debug>(
+        &self,
+        context: &Context,
+        minimum_trust: TrustLevel,
+        git_args: impl IntoIterator<Item = T>,
+    ) -> Option<CommandOutput> {
+        let repo_trust = self.trust;
+        if minimum_trust > repo_trust {
+            log::warn!(
+                "Not executing git command because the minimum trust level {minimum_trust:?} is greater than the repository trust level {repo_trust:?}."
+            );
+            return None;
+        }
+
         let mut command = create_command("git").ok()?;
 
         // A value of `true` should not execute external commands.
@@ -784,7 +837,7 @@ impl Repo {
 }
 
 /// Remote repository
-pub struct Remote {
+pub struct GitRemote {
     pub branch: Option<String>,
     pub name: Option<String>,
 }
@@ -916,7 +969,7 @@ fn get_current_branch(repository: &Repository) -> Option<gix::refs::FullName> {
 fn get_remote_repository_info(
     repository: &Repository,
     branch_name: Option<&gix::refs::FullNameRef>,
-) -> Option<Remote> {
+) -> Option<GitRemote> {
     let branch_name = branch_name?;
     let branch = repository
         .branch_remote_ref_name(branch_name, gix::remote::Direction::Fetch)
@@ -926,7 +979,7 @@ fn get_remote_repository_info(
         .branch_remote_name(branch_name.shorten(), gix::remote::Direction::Fetch)
         .map(|n| n.as_bstr().to_string());
 
-    Some(Remote { branch, name })
+    Some(GitRemote { branch, name })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1029,6 +1082,131 @@ mod tests {
     use super::*;
     use crate::test::default_context;
     use std::io;
+
+    #[test]
+    fn git_executable_preference_requires_full_trust() -> io::Result<()> {
+        use crate::test::{COMMON_GIT_PROVIDERS, fixture_repo};
+        use gix::sec::Trust;
+
+        let repo_dir = fixture_repo(COMMON_GIT_PROVIDERS[0])?;
+        let mut context: Context = crate::test::ModuleRenderer::new("git_status")
+            .path(repo_dir.path())
+            .into();
+
+        for (trust, enabled, expected) in [
+            (Trust::Full, false, false),
+            (Trust::Full, true, true),
+            (Trust::Reduced, false, false),
+            (Trust::Reduced, true, false),
+        ] {
+            context.set_git_trust(trust);
+            assert_eq!(
+                context.get_git_repo().unwrap().use_git_executable(enabled),
+                Some(expected),
+            );
+        }
+        repo_dir.close()
+    }
+
+    #[test]
+    fn git_executable_handles_backend_requirements() -> io::Result<()> {
+        use crate::test::{FixtureProvider, ModuleRenderer, fixture_repo};
+        use gix::sec::Trust;
+
+        for (reftable, fsmonitor, sparse) in [
+            (false, true, false),
+            (true, false, false),
+            (false, false, true),
+        ] {
+            let repo_dir = fixture_repo(FixtureProvider::Git {
+                reftable,
+                bare: false,
+            })?;
+            if sparse {
+                crate::modules::git_status::tests::make_sparse(repo_dir.path())?;
+            }
+            let mut context: Context = ModuleRenderer::new("git_status")
+                .path(repo_dir.path())
+                .into();
+
+            for (trust, expected) in [(Trust::Full, true), (Trust::Reduced, false)] {
+                context.set_git_trust(trust);
+                context
+                    .git_repo
+                    .get_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .fs_monitor_value_is_true = fsmonitor;
+                assert_eq!(
+                    context.get_git_repo().unwrap().use_git_executable(false),
+                    Some(expected),
+                    "reftable={reftable}, fsmonitor={fsmonitor}, sparse={sparse}, trust={trust:?}",
+                );
+            }
+            repo_dir.close()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn git_commands_require_full_trust_by_default() -> io::Result<()> {
+        use crate::test::{COMMON_GIT_PROVIDERS, fixture_repo};
+        use gix::sec::Trust;
+
+        let repo_dir = fixture_repo(COMMON_GIT_PROVIDERS[0])?;
+        let mut context: Context = crate::test::ModuleRenderer::new("git_status")
+            .path(repo_dir.path())
+            .into();
+
+        for (trust, allowed) in [(Trust::Full, true), (Trust::Reduced, false)] {
+            context.set_git_trust(trust);
+            let output = context
+                .get_git_repo()
+                .unwrap()
+                .exec_git(&context, ["rev-parse", "--is-inside-work-tree"]);
+            if allowed {
+                assert_eq!(output.unwrap().stdout.trim(), "true");
+            } else {
+                assert!(output.is_none());
+            }
+        }
+        repo_dir.close()
+    }
+
+    #[test]
+    fn git_commands_honor_explicit_required_trust() -> io::Result<()> {
+        use crate::test::{COMMON_GIT_PROVIDERS, fixture_repo};
+        use gix::sec::Trust;
+
+        let repo_dir = fixture_repo(COMMON_GIT_PROVIDERS[0])?;
+        let mut context: Context = crate::test::ModuleRenderer::new("git_status")
+            .path(repo_dir.path())
+            .into();
+
+        for (trust, required, allowed) in [
+            (Trust::Full, Trust::Full, true),
+            (Trust::Full, Trust::Reduced, true),
+            (Trust::Reduced, Trust::Reduced, true),
+            (Trust::Reduced, Trust::Full, false),
+        ] {
+            context.set_git_trust(trust);
+            let output = context
+                .get_git_repo()
+                .unwrap()
+                .exec_git_with_required_trust(
+                    &context,
+                    required,
+                    ["for-each-ref", "--format=%(refname)", "refs/heads/master"],
+                );
+            if allowed {
+                assert_eq!(output.unwrap().stdout.trim(), "refs/heads/master");
+            } else {
+                assert!(output.is_none());
+            }
+        }
+        repo_dir.close()
+    }
 
     fn testdir(paths: &[&str]) -> Result<tempfile::TempDir, std::io::Error> {
         let dir = tempfile::tempdir()?;

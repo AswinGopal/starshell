@@ -113,6 +113,12 @@ impl<'a> ModuleRenderer<'a> {
         self
     }
 
+    /// Set Starship's command trust policy after configuring the repository path.
+    pub fn git_trust(mut self, trust: gix::sec::Trust) -> Self {
+        self.context.set_git_trust(trust);
+        self
+    }
+
     /// Sets the config of the underlying context
     pub fn config(mut self, config: toml::Table) -> Self {
         self.context = self.context.set_config(config);

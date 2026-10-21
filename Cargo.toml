@@ -1,6 +1,6 @@
 [package]
 name = "starshell"
-version = "0.1.0"
+version = "1.27.0"
 authors = ["Starshell Contributors"]
 build = "build.rs"
 edition = "2024"

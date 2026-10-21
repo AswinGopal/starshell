@@ -1,10 +1,10 @@
 {
   "project": {
     "name": "starshell",
-    "version": "0.1.0",
+    "version": "1.27.0",
     "description": "A minimal, fast shell prompt with a fixed, hand-picked set of modules, built for Linux only.",
     "license": "ISC",
-    "relationship_to_upstream": "starshell is a standalone fork of Starship (starship.rs). It has its own version history and is not mechanically synced with upstream Starship releases. Upstream is used only as a manual reference when the maintainer notices a change worth porting into the core engine or into a module this project still uses.",
+    "relationship_to_upstream": "starshell is a standalone fork of Starship (starship.rs). Its version number mirrors the upstream Starship release it was last manually reconciled against (currently 1.27.0); a matching number does not mean identical code, because changes to modules this project does not ship are not ported. It is not mechanically synced with upstream Starship releases. Upstream is used only as a manual reference when the maintainer notices a change worth porting into the core engine or into a module this project still uses.",
     "build_command": "cargo build --release",
     "distribution": "Binary only. No install script, no OS packages, no docs site, no CI/CD pipeline, no crates.io publishing."
   },
@@ -20,7 +20,7 @@
     "os": "Linux only",
     "consequences": [
       "No Windows-specific dependencies (deelevate, windows crate, winres) or code paths (modules/utils/directory_win.rs does not exist).",
-      "nix crate is a real, load-bearing dependency: used by modules/utils/directory_nix.rs and by git_status.rs's WSL-detection path.",
+      "nix crate is a real, load-bearing dependency: used by modules/utils/directory_nix.rs, by git_status.rs's WSL-detection path, and by utils/mod.rs's read_file (non-blocking open via nix::fcntl).",
       "All shell-init scripts are still shipped regardless of OS, because shell choice is a runtime CLI argument (`starshell init <shell>`), not a compile-time platform branch -- see init_system below."
     ]
   },
@@ -31,7 +31,7 @@
       "main.rs":       "Binary entry point. Defines the CLI (clap-based): subcommands for prompt rendering, module introspection, shell init/completions, config editing, config-schema output, bug-report. Imports the library crate as `starshell::...`.",
       "lib.rs":        "Library crate root. Declares all top-level modules, invokes shadow_rs's `shadow!` macro for build metadata (PKG_VERSION, CLAP_LONG_VERSION), and exposes thread-count helpers driven by the STARSHIP_NUM_THREADS env var.",
       "config.rs":     "Loads and parses starship.toml. Exposes get_custom_modules() for reading the [custom.*] table, and generic get_config()/get_module_config() lookups used throughout.",
-      "context.rs":    "The Context struct: current directory, environment snapshot, shell/target info, and the core git repo-discovery machinery (gix-based Repo/get_repo(), shared by directory.rs, custom.rs's require_repo option, and every git_* module). Also owns the generic detect_env_vars/detect_env_vars2 mechanism used by username and python to conditionally activate based on environment variables being present -- this is unrelated to any module named 'env_var'; no such module exists in this project.",
+      "context.rs":    "The Context struct: current directory, environment snapshot, shell/target info, and the core git repo-discovery machinery (gix-based GitRepo/get_git_repo(), shared by directory.rs, custom.rs's require_repo option, and every git_* module). GitRepo records the repository's trust level (gix git_dir_trust): exec_git runs the git executable only in fully trusted repositories, exec_git_with_required_trust lets a caller accept reduced trust for fixed ref queries that cannot run repository-configured filters or hooks, and use_git_executable()/uses_reftables() decide when git_status/git_branch may shell out to git at all (at reduced trust git_status falls back to gix). Also owns the generic detect_env_vars/detect_env_vars2 mechanism used by username and python to conditionally activate based on environment variables being present -- this is unrelated to any module named 'env_var'; no such module exists in this project.",
       "module.rs":     "Defines ALL_MODULES (the authoritative list of statically-dispatched module names) and the Module struct/segment-rendering primitives.",
       "modules/mod.rs":"Dispatches a module name to its implementation via handle(), and supplies one-line descriptions via description(). custom is dispatched dynamically by \"custom.\" prefix match, not by exact name, so it does not appear in ALL_MODULES.",
       "configs/mod.rs":"Defines FullConfig, the aggregate struct combining the root prompt config with every module's config struct. Drives starship.toml parsing and (optionally) JSON-schema generation.",
@@ -40,7 +40,7 @@
       "configure.rs":  "Implements `starshell config` (opening the config file in $EDITOR) and related config-editing subcommands.",
       "formatter/":    "The format-string parser and renderer. spec.pest defines the grammar; string_formatter.rs and parser.rs implement it; version.rs provides shared version-string formatting used by python (via versions crate) and time.",
       "init/":         "Shell integration. init/mod.rs unconditionally embeds every script in this directory via include_str!() and dispatches by the CompletionShell enum / Commands::Init match arms in main.rs -- see init_system.critical_invariant below.",
-      "utils/":        "Command execution (create_command, exec_cmd, mock_cmd for tests), custom serde deserializer enforcing the allowed top-level TOML key set, path/statusline helpers.",
+      "utils/":        "Command execution (create_command, exec_cmd, mock_cmd for tests), bounded file reading (read_file: regular files only, 100 MiB cap, non-blocking open), custom serde deserializer enforcing the allowed top-level TOML key set, path/statusline helpers.",
       "segment.rs":    "Styled text segment primitive used by every module's rendering output.",
       "logger.rs":     "Log level / log file setup.",
       "bug_report.rs": "Implements `starshell bug-report`; the only consumer of the urlencoding crate and one of several consumers of os_info (for OS/version info in the report body, independent of whether the os module is enabled)."
@@ -91,13 +91,13 @@
         "name": "directory",
         "dispatch": "static",
         "purpose": "Displays the current working directory, with truncation and path substitution rules.",
-        "depends_on": ["context::get_repo() (gix-based repo-root contraction)", "regex", "path-slash", "unicode-segmentation", "indexmap (path substitution table)", "modules/utils/directory.rs + directory_nix.rs"]
+        "depends_on": ["context::get_git_repo() (gix-based repo-root contraction)", "regex", "path-slash", "unicode-segmentation", "indexmap (path substitution table)", "modules/utils/directory.rs + directory_nix.rs"]
       },
       {
         "name": "git_branch",
         "dispatch": "static",
         "purpose": "Displays the active git branch.",
-        "depends_on": ["gix", "modules::git_status::uses_reftables (direct cross-module import -- git_status must exist for this module to compile)"]
+        "depends_on": ["gix", "context::GitRepo (uses_reftables(); exec_git_with_required_trust at reduced trust for its fixed symbolic-ref/for-each-ref queries) -- no cross-module imports"]
       },
       {
         "name": "git_commit",
@@ -114,8 +114,8 @@
       {
         "name": "git_status",
         "dispatch": "static",
-        "purpose": "Displays working-tree status counts (staged, modified, untracked, ahead/behind, etc.). Declared `pub` (not just `mod`) in modules/mod.rs specifically so git_branch.rs can import uses_reftables from it.",
-        "depends_on": ["gix", "nix (WSL-detection path, target_os = \"linux\")", "parking_lot", "regex"]
+        "purpose": "Displays working-tree status counts (staged, modified, untracked, ahead/behind, etc.). Declared `pub` (not just `mod`) in modules/mod.rs; its only remaining out-of-module consumer is test-only (context.rs's tests call git_status::tests::make_sparse).",
+        "depends_on": ["gix", "context::GitRepo (use_git_executable() decides whether the git executable may be used for status; exec_git_with_required_trust at reduced trust for its for-each-ref upstream query)", "nix (WSL-detection path, target_os = \"linux\")", "parking_lot", "regex"]
       },
       {
         "name": "time",
@@ -151,7 +151,7 @@
         "name": "custom",
         "dispatch": "dynamic (\"custom.<name>\" prefix match; also expands bare \"$custom\" in a format string to every configured [custom.*] entry via print.rs's handle_module/should_add_implicit_module)",
         "purpose": "Runs a user-specified shell command and displays its output as a segment. Supports gating by detected files/extensions/folders, an arbitrary `when` shell condition, `require_repo`, and OS filtering. The general-purpose mechanism for displaying anything not covered by a dedicated module.",
-        "depends_on": ["process_control (command execution with timeout)", "context::get_repo() (for require_repo)", "utils::create_command"]
+        "depends_on": ["process_control (command execution with timeout)", "context::get_git_repo() (for require_repo)", "utils::create_command"]
       }
     ],
     "not_present": {
@@ -162,7 +162,8 @@
         { "name": "shell",        "reason": "Displays detected shell name; not depended on by any module in this list." },
         { "name": "status",       "reason": "Displays last command exit code; not depended on by any module in this list." },
         { "name": "cmd_duration", "reason": "Displays command elapsed time. Its removal is also why notify-rust and two small formatting helpers (elapsed-time humanizer, integer humanizer) do not exist in utils/mod.rs." },
-        { "name": "vcs",          "reason": "Meta-dispatcher to whichever VCS is detected; not depended on by any module in this list, and nothing in this list depends on it either." }
+        { "name": "vcs",          "reason": "Meta-dispatcher to whichever VCS is detected; not depended on by any module in this list, and nothing in this list depends on it either." },
+        { "name": "jj_bookmark / jj_change / jj_metrics / jj_status", "reason": "Jujutsu modules (plus Jujutsu support inside vcs) added upstream in 1.27.0. No Jujutsu support is shipped: vcs is excluded and nothing in this list depends on them." }
       ],
       "everything_else": "All other upstream modules (toolchain/language version modules, cloud-provider modules, container/orchestration modules, etc.) are simply absent -- not disabled, not stubbed, no trace in the wiring files."
     }
@@ -176,7 +177,7 @@
       "clap_complete_nushell": ["main.rs"],
       "dirs": ["bug_report.rs", "logger.rs", "utils/mod.rs"],
       "dunce": ["context.rs", "modules/directory.rs", "test/mod.rs"],
-      "gix": ["context.rs", "modules/git_branch.rs", "modules/git_commit.rs", "modules/git_state.rs", "modules/git_status.rs"],
+      "gix": ["context.rs", "modules/git_branch.rs", "modules/git_commit.rs", "modules/git_state.rs", "modules/git_status.rs", "test/mod.rs"],
       "indexmap": ["configs/directory.rs", "configs/mod.rs", "configs/os.rs", "configs/starship_root.rs", "configs/username.rs", "modules/directory.rs"],
       "jiff": ["configs/time.rs", "modules/time.rs"],
       "log": ["most of src/ -- general logging"],
@@ -216,7 +217,8 @@
   "init_system": {
     "description": "Shell integration for bash, zsh, fish, elvish, nushell, tcsh, xonsh, powershell, and ion. Each shell's init snippet is a static file in src/init/, embedded into the binary at compile time.",
     "critical_invariant": "src/init/mod.rs includes every one of these files via include_str!() completely unconditionally -- there is no #[cfg] gate keyed on platform or shell choice. Shell selection happens at runtime via `starshell init <shell>`, dispatched through the CompletionShell enum and Commands::Init match arms in main.rs, not through compile-time branching. Deleting any file this module includes breaks the build on every platform, regardless of whether that shell 'belongs' to the platform you're targeting. To drop support for a shell, you must remove it from three places in lockstep: the CompletionShell enum, the relevant match arms in main.rs, and the include_str!/const declaration in init/mod.rs -- deleting only the script file is not sufficient and will not compile.",
-    "files": ["starship.bash", "starship.zsh", "starship.fish", "starship.elv", "starship.nu", "starship.tcsh", "starship.xsh", "starship.lua (used for cmd.exe)", "starship.ps1", "starship.ion"]
+    "files": ["starship.bash", "starship.zsh", "starship.fish", "starship.elv", "starship.nu", "starship.tcsh", "starship.xsh", "starship.lua (used for cmd.exe)", "starship.ps1", "starship.ion"],
+    "upstream_parity": "As of 1.27.0 all ten scripts are byte-identical to upstream Starship's, so a plain diff against an upstream checkout shows only genuine upstream changes."
   },
 
   "runtime_protocol": {
@@ -227,7 +229,7 @@
   },
 
   "cargo_toml": {
-    "package_identity": "name = starshell, version = 0.1.0. No documentation/homepage/repository/include/readme/categories/keywords fields -- these only matter for `cargo package`/crates.io publishing, which this project never does.",
+    "package_identity": "name = starshell, version = 1.27.0 (mirrors the upstream release last reconciled -- see project.relationship_to_upstream). No documentation/homepage/repository/include/readme/categories/keywords fields -- these only matter for `cargo package`/crates.io publishing, which this project never does.",
     "features": {
       "default": "empty -- no features enabled by default",
       "config-schema": "optional, gated on the schemars dependency; enables `starshell config-schema` to emit a JSON schema for FullConfig"
@@ -261,7 +263,15 @@
     },
     {
       "area": "auditing suppressions generally",
-      "risk": "Before trusting the tree, grep for every #[allow(...)], #![allow(...)], and #[warn(...)] site and check each individually -- do not assume a suppression is still contextually valid just because it was valid when written. Most in this codebase are legitimate and narrowly scoped (test-only struct fields with no reader by design, generated-code lint false positives from pest_derive, platform-conditional numeric conversions with an inline comment explaining why). One category is worth extra scrutiny every time: any #[allow(dead_code)] on a pub fn, since that is exactly the lint that would otherwise catch an orphaned function left over from a deleted module or a refactor. The one legitimate exception to the disallowed-methods ban on std::process::Command::new lives in utils/mod.rs's create_command() -- confirm it remains the *only* call site (grep 'Command::new') if you ever touch process-spawning code, since that single exception is what makes the project-wide ban in clippy.toml meaningful."
+      "risk": "Before trusting the tree, grep for every #[allow(...)], #![allow(...)], and #[warn(...)] site and check each individually -- do not assume a suppression is still contextually valid just because it was valid when written. Most in this codebase are legitimate and narrowly scoped (test-only struct fields with no reader by design, generated-code lint false positives from pest_derive, platform-conditional numeric conversions with an inline comment explaining why). One category is worth extra scrutiny every time: any #[allow(dead_code)] on a pub fn, since that is exactly the lint that would otherwise catch an orphaned function left over from a deleted module or a refactor. std::process::Command::new is called only from utils/mod.rs's create_command() -- confirm it remains the *only* call site (grep 'Command::new') if you ever touch process-spawning code."
+    },
+    {
+      "area": "running the git executable",
+      "risk": "Run git only through GitRepo::exec_git (requires full repository trust) or GitRepo::exec_git_with_required_trust. Accept reduced trust only for fixed commands whose arguments cannot make git run repository-configured filters or hooks (today: symbolic-ref and for-each-ref in git_branch.rs and git_status.rs). `git status` runs at full trust only; at reduced trust git_status falls back to gix. A new exec_git caller must decide its trust requirement deliberately."
+    },
+    {
+      "area": "reading files",
+      "risk": "Read files through utils::read_file, never fs::read_to_string, fs::read or Read::read_to_string on a path that depends on the current directory or repository contents: read_file refuses non-regular files (a FIFO cannot hang the prompt) and files over 100 MiB. When touching file-reading code, grep for fs::read_to_string, fs::read and read_to_string to confirm nothing bypasses it. Known exception, deliberately left as upstream has it: modules/python.rs reads pyvenv.cfg with Ini::load_from_file_noescape, whose path comes from the user-set VIRTUAL_ENV rather than from repository contents."
     }
   ]
 }
