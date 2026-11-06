@@ -4,23 +4,1319 @@
     "version": "1.27.0",
     "description": "A minimal, fast shell prompt with a fixed, hand-picked set of modules, built for Linux only.",
     "license": "ISC",
-    "relationship_to_upstream": "starshell is a standalone fork of Starship (starship.rs). Its version number mirrors the upstream Starship release it was last manually reconciled against (currently 1.27.0); a matching number does not mean identical code, because changes to modules this project does not ship are not ported. It is not mechanically synced with upstream Starship releases. Upstream is used only as a manual reference when the maintainer notices a change worth porting into the core engine or into a module this project still uses.",
+    "relationship_to_upstream": "starshell is a standalone fork of Starship (starship.rs): the source of a Starship release without what starshell does not ship, plus a short list of deliberate differences. Its version number mirrors the upstream release it was last reconciled against (currently 1.27.0); a matching number does not mean identical code, because code for modules this project does not ship is not carried. The `mould` section holds the rules that turn any upstream release into starshell's source tree, so a new release is ported by applying the mould to it and diffing the result against the repository; the maintainer runs it when a release is worth reconciling, it is not automatic. The scope rules, procedure, file map and registry of intentional differences for that reconciliation are in upstream_sync.",
     "build_command": "cargo build --release",
     "distribution": "Binary only. No install script, no OS packages, no docs site, no CI/CD pipeline, no crates.io publishing."
+  },
+
+  "upstream_sync": {
+    "purpose": "Self-contained instructions for producing starshell from upstream Starship and for reconciling a new upstream release into it. Read this section first, then `mould`, which holds the rules that turn any upstream release into starshell. Use core_engine, module_wiring_contract, modules, dependency_map and init_system as the reference for what exists in this tree and why. Two uses: (1) build -- apply `mould` to a clean copy of an upstream release to obtain the starshell source tree for it; (2) sync -- do that for a newer release and diff the result against the repository: that diff is the port. The mould is version-independent and is not rewritten per release; this section holds what changes per release: the baseline, the file map, the registry of intentional divergences and the reconciliation log.",
+    "upstream": {
+      "repository": "https://github.com/starship/starship",
+      "release_notes": "CHANGELOG.md at the repository root; the same text is on each GitHub release. Tags are named vX.Y.Z.",
+      "what_to_compare": "A checkout (or source archive) of the target release tag, never main, so the diff matches the release notes. When several releases were skipped, read the notes of every release after the baseline, not only the latest."
+    },
+    "baseline": {
+      "last_reconciled_release": "1.27.0",
+      "release_date": "2026-10-17",
+      "meaning": "Cargo.toml's version equals this release. Every upstream change up to and including it is either ported or listed as skipped in reconciliation_log. A change to starshell that is not a port of an upstream change must not move this number."
+    },
+    "scope_rules": {
+      "default": "Parity. Everything upstream changes in code that starshell keeps arrives by applying the mould; only the mould's rules make starshell differ from upstream, each tagged with an entry of intentional_divergences. `principle`, `port` and `skip` below classify release-note items so that a reviewer can tell what to expect in the diff; they do not select what the mould does.",
+      "principle": "A release-note item is relevant if and only if the files it changes, or the behaviour it fixes, exist in this tree. Verify by grepping this tree for the module, function or config key the item names -- do not infer from the item's title. Every item, ported or not, gets a line in reconciliation_log.",
+      "port": [
+        "Security fixes in any file starshell contains (core engine, shipped modules, utils, init scripts) -- first, and with their tests.",
+        "Bug fixes and features of the 12 shipped modules (see modules.list) and their configs/<module>.rs structs. New config keys are added exactly as upstream spells them, so existing starship.toml files keep working.",
+        "Changes to the core engine: main.rs, lib.rs, config.rs, configure.rs, context.rs, module.rs, print.rs, segment.rs, logger.rs, bug_report.rs, formatter/, utils/, and all ten scripts in init/."
+      ],
+      "skip": [
+        "Everything about a module that is not in modules.list: features, fixes, performance work, new modules (toolchain versions, cloud, containers, jj_*, vcs, battery, cmd_duration, env_var, hostname, sudo, ...).",
+        "Windows-only files, dependencies and build steps (modules/utils/directory_win.rs, deelevate, windows, winresource, the exe manifest). `#[cfg(windows)]` blocks inside files starshell keeps are not removed: they compile to nothing on Linux, and keeping them as upstream has them keeps diffs clean, so changes to them arrive unchanged.",
+        "Presets: the `preset` subcommand, preset files, and build.rs's preset-generation hook.",
+        "Everything outside src/, Cargo.toml and build.rs: documentation, install scripts, media, CI workflows, release automation, localisation, repository lint/typo/dependency-policy files.",
+        "Dependency-only churn in Cargo.toml -- see dependency_versions for when a bump is required instead."
+      ]
+    },
+    "naming_translation": {
+      "rule": "Upstream names are kept wherever possible so a diff against upstream stays readable. Only these differ.",
+      "map": {
+        "crate and library name": "upstream `starship` -> starshell `starshell` (Cargo [package] name; main.rs imports `starshell::...`; other files use `crate::`).",
+        "binary name in CLI and completions": "upstream `starship` -> starshell `starshell`, in main.rs only.",
+        "unchanged on purpose": "the STARSHIP_* environment variables, starship.toml, the `::STARSHIP::` placeholder in init scripts, and every identifier in modules, configs and context -- see runtime_protocol.",
+        "git repo types (adopted from upstream in 1.27.0)": "GitRepo, GitRemote, Context::get_git_repo(), Context::git_repo -- identical to upstream; they replaced the earlier Repo / Remote / get_repo()."
+      }
+    },
+    "procedure": [
+      "1. Obtain the release notes for every release after baseline.last_reconciled_release and the source of the target tag (upstream.what_to_compare). Never modify the checkout; work on a copy.",
+      "2. Build the target: apply `mould` to a scratch copy of the target source (mould.how_to_use) and run its gates. Resolve every rule that failed, or went vacuous wrongly, as mould.when_a_rule_does_not_apply says. Apart from step 7, that is the only occasion on which the mould is edited.",
+      "3. Diff the built tree against the repository (src/, Cargo.toml, build.rs, LICENSE). That diff is the port. Triage its hunks against the release-note items with scope_rules and agree the port with the maintainer before changing the repository: every hunk must trace to an upstream change; a hunk that traces to nothing is a mould or repository error, to be resolved first.",
+      "4. Cargo.toml comes from the mould's template and does not follow upstream by itself: compare upstream's Cargo.toml at the baseline and target tags (compare_commands.upstream_changes) and apply mould.manifest_policy to the template.",
+      "5. Copy the built files into the repository. Regenerate Cargo.lock by building (the first build must not use --locked); only the starshell version line and genuinely changed dependencies should differ.",
+      "6. If a built hunk needs an API of a crate pinned behind upstream (dependency_versions), put the translation in the mould (a P6 rule, as D03 and D04), or bump that crate if the port genuinely needs the newer API. A fix must come with a test that fails without it: if upstream's test passes without the fix in starshell's harness, rewrite the test (precedent: D07). Run everything in `verification`.",
+      "7. When starshell adopts a deliberate new difference from upstream (a cut, an addition or a translation), add its rule to the mould and its entry to intentional_divergences in the same change; a difference without a rule does not survive the next release.",
+      "8. Update this file in the same change: project.version and cargo_toml.package_identity (the template's version follows the upstream release), baseline, file_map (re-run compare_commands.identical_check with UP at the target tag and move files between lists; each adapted entry's `rules` are the mould rules that touch the file), intentional_divergences (their `rules`), dependency_versions, a new reconciliation_log entry, and any core_engine / modules / dependency_map / known_footguns text the change made untrue. Then run mould.self_tests against the new baseline tag: both must pass."
+    ],
+    "compare_commands": {
+      "note": "Run from the starshell repository root. UP is the path of an upstream checkout; OLD and NEW are the baseline and target tags; BUILT is the tree the mould produced. identical_check compares starshell against whatever tag UP has checked out: at the baseline tag it verifies file_map before a sync, at the target tag it produces the new file_map after one.",
+      "upstream_changes": "git -C \"$UP\" diff --stat vOLD vNEW -- src Cargo.toml build.rs",
+      "identical_check": "for f in $(find src -type f ! -path 'src/test/fixtures/*' | sort) Cargo.toml build.rs; do if [ -f \"$UP/$f\" ]; then if cmp -s \"$f\" \"$UP/$f\"; then echo \"identical  $f\"; else echo \"differs    $f\"; fi; else echo \"no-upstream $f\"; fi; done",
+      "context_rs_note": "src/context.rs has no upstream counterpart of that name: compare it against $UP/src/context/mod.rs and $UP/src/context/git_repo.rs (see D02).",
+      "port_diff": "diff -r \"$BUILT/src\" src; for f in Cargo.toml build.rs LICENSE; do diff \"$BUILT/$f\" \"$f\"; done   # the output is the port; empty at the baseline"
+    },
+    "file_map": {
+      "description": "Where each starshell file stands relative to upstream at the baseline. `identical` files are byte-for-byte upstream: no rule of the mould touches them. `adapted` files differ only through the listed mould rules (`rules`), which implement the listed divergence ids. Upstream's own tree has more files than starshell; the ones that matter are listed under upstream_only.",
+      "identical": [
+        "src/bug_report.rs",
+        "src/configs/character.rs",
+        "src/configs/custom.rs",
+        "src/configs/directory.rs",
+        "src/configs/git_branch.rs",
+        "src/configs/git_commit.rs",
+        "src/configs/git_state.rs",
+        "src/configs/git_status.rs",
+        "src/configs/line_break.rs",
+        "src/configs/os.rs",
+        "src/configs/python.rs",
+        "src/configs/time.rs",
+        "src/configs/username.rs",
+        "src/configure.rs",
+        "src/formatter/mod.rs",
+        "src/formatter/model.rs",
+        "src/formatter/parser.rs",
+        "src/formatter/spec.pest",
+        "src/formatter/string_formatter.rs",
+        "src/init/mod.rs",
+        "src/init/starship.bash",
+        "src/init/starship.elv",
+        "src/init/starship.fish",
+        "src/init/starship.ion",
+        "src/init/starship.lua",
+        "src/init/starship.nu",
+        "src/init/starship.ps1",
+        "src/init/starship.tcsh",
+        "src/init/starship.xsh",
+        "src/init/starship.zsh",
+        "src/lib.rs",
+        "src/logger.rs",
+        "src/modules/character.rs",
+        "src/modules/custom.rs",
+        "src/modules/git_commit.rs",
+        "src/modules/git_state.rs",
+        "src/modules/line_break.rs",
+        "src/modules/os.rs",
+        "src/modules/python.rs",
+        "src/modules/time.rs",
+        "src/modules/utils/directory.rs",
+        "src/modules/utils/directory_nix.rs",
+        "src/modules/utils/path.rs",
+        "src/segment.rs",
+        "src/utils/env.rs"
+      ],
+      "adapted": [
+        {"file": "Cargo.toml", "divergences": ["D10"], "rules": ["P7.1"]},
+        {"file": "build.rs", "divergences": ["D08", "D09"], "rules": ["P7.2"]},
+        {"file": "src/config.rs", "divergences": ["D09"], "rules": ["P5.5"]},
+        {"file": "src/configs/mod.rs", "divergences": ["D01"], "rules": ["P3.6", "P3.7"]},
+        {"file": "src/configs/starship_root.rs", "divergences": ["D01"], "rules": ["P3.2", "P6.3"]},
+        {"file": "src/formatter/version.rs", "divergences": ["D04"], "rules": ["P6.11"]},
+        {"file": "src/main.rs", "divergences": ["D08", "D09"], "rules": ["P5.1", "P5.2", "P6.8", "P6.9", "P6.10"]},
+        {"file": "src/module.rs", "divergences": ["D01"], "rules": ["P3.1"]},
+        {"file": "src/modules/directory.rs", "divergences": ["D07"], "rules": ["P5.29", "P5.30", "P6.25", "P6.26"]},
+        {"file": "src/modules/git_branch.rs", "divergences": ["D03"], "rules": ["P6.15"]},
+        {"file": "src/modules/git_status.rs", "divergences": ["D03", "D05"], "rules": ["P1.1", "P6.12", "P6.13", "P6.14"]},
+        {"file": "src/modules/mod.rs", "divergences": ["D01", "D14"], "rules": ["P3.3", "P3.4", "P3.5", "P5.11", "P6.4", "P6.5", "P6.6", "P6.7"]},
+        {"file": "src/modules/username.rs", "divergences": ["D06"], "rules": ["P6.1", "P6.2"]},
+        {"file": "src/modules/utils/mod.rs", "divergences": ["D05", "D07", "D12"], "rules": ["P5.26", "P5.27", "P5.28"]},
+        {"file": "src/print.rs", "divergences": ["D09"], "rules": ["P5.3", "P5.4", "P5.6", "P5.7", "P5.8"]},
+        {"file": "src/test/mod.rs", "divergences": ["D01", "D11"], "rules": ["P5.11", "P5.16", "P5.17", "P5.18", "P5.19", "P5.20", "P5.21"]},
+        {"file": "src/utils/mod.rs", "divergences": ["D12"], "rules": ["P5.22", "P5.23", "P5.24", "P5.25"]},
+        {"file": "src/utils/serde.rs", "divergences": ["D09"], "rules": ["P5.9", "P5.10"]},
+        {"file": "src/utils/statusline.rs", "divergences": ["D13"], "rules": ["P5.31", "P5.32"]}
+      ],
+      "starshell_only": [
+        {
+          "file": "src/context.rs",
+          "upstream_counterpart": ["src/context/mod.rs", "src/context/git_repo.rs"],
+          "divergences": ["D01", "D02", "D03", "D06"],
+          "rules": [
+            "P4.1",
+            "P4.2",
+            "P4.3",
+            "P5.11",
+            "P5.12",
+            "P5.13",
+            "P5.14",
+            "P5.15",
+            "P6.16",
+            "P6.17",
+            "P6.18",
+            "P6.19",
+            "P6.20",
+            "P6.21",
+            "P6.22",
+            "P6.23",
+            "P6.24"
+          ]
+        }
+      ],
+      "upstream_only": [
+        "src/context/jj_repo.rs (Jujutsu repo discovery)",
+        "src/modules/utils/directory_win.rs, src/modules/utils/format.rs, src/modules/utils/truncate.rs (see D07, D05, D12)",
+        "src/test/jj_tester.rs",
+        "src/modules/<name>.rs and src/configs/<name>.rs for every module not in modules.list",
+        "build.rs's preset generation and everything outside src/ (see scope_rules.skip)"
+      ],
+      "test_fixtures": "src/test/fixtures/ holds git-repo.bundle and git-repo-sha256.bundle, which the git tests use, and hg-repo.bundle, which no test references (see unreconciled_deltas)."
+    },
+    "intentional_divergences": [
+      {
+        "id": "D01",
+        "area": "module scope: module.rs, modules/mod.rs, configs/mod.rs, configs/starship_root.rs",
+        "starshell": "Only the shipped modules appear in ALL_MODULES, the `mod`/`pub mod` declarations, handle() and description() arms, FullConfig fields and PROMPT_ORDER. No `#[cfg(feature = \"battery\")]` items, no BatteryInfoProvider re-export. PROMPT_ORDER keeps upstream's relative order for the modules it contains. The `claude-code` default profile is `$git_branch`.",
+        "upstream": "All upstream modules; the `claude-code` default profile is `$claude_model$git_branch$claude_context$claude_cost`.",
+        "when_porting": "The mould filters these files down to the shipped modules, so upstream's hunks for shipped modules and for the generic machinery arrive by themselves, and a reordered PROMPT_ORDER keeps its new relative order. Never copy these files over by hand.",
+        "rules": [
+          "P2.2",
+          "P2.3",
+          "P3.1",
+          "P3.2",
+          "P3.3",
+          "P3.4",
+          "P3.5",
+          "P3.6",
+          "P3.7",
+          "P5.11",
+          "P6.3"
+        ]
+      },
+      {
+        "id": "D02",
+        "area": "context.rs",
+        "starshell": "One file combining upstream's context/mod.rs and context/git_repo.rs, function for function and test for test. The GitRepo block is inserted above the `ScanDir` comment, and GitRemote is declared after the GitRepo impl block (upstream declares it between `struct GitRepo` and `impl GitRepo`). Omitted: context/jj_repo.rs, Context::jj_repo / set_jj_repo / get_jj_repo, the battery_info_provider field, Context::is_ssh_session (see D06). The doc comment and log message that say the git executable is used for `status and metrics` say `status` here, because git_metrics is not shipped.",
+        "upstream": "A context/ directory with mod.rs, git_repo.rs and jj_repo.rs.",
+        "when_porting": "Port a change to either upstream file into the matching place in context.rs. Skip anything that mentions JJRepo, jj or battery.",
+        "rules": [
+          "P4.1",
+          "P4.2",
+          "P4.3",
+          "P5.12",
+          "P5.13",
+          "P5.14",
+          "P6.22",
+          "P6.23",
+          "P6.24"
+        ]
+      },
+      {
+        "id": "D03",
+        "area": "gix 0.85 API (starshell pins gix 0.85.0; upstream 1.27.0 uses 0.89.0)",
+        "starshell": "Context's git_repo is OnceLock<Result<GitRepo, Box<gix::discover::Error>>> (get_git_repo() returns Result<&GitRepo, &gix::discover::Error> and ends its chain with .map_err(std::convert::AsRef::as_ref)); git_status.rs passes gix::features::progress::Discard to .status(); git_branch.rs takes `&gix::remote::Names<'_>`; GitRepo::uses_reftables compares `kind.as_ref() == \"reftable\"`.",
+        "upstream": "Result<GitRepo, gix::Error>; gix::progress::Discard; `&gix::remote::Names`; `kind == \"reftable\"`.",
+        "when_porting": "Translate these spellings on every ported hunk. Expect further gix signature differences; fix them against the pinned version rather than bumping gix, unless the port needs the newer API.",
+        "rules": [
+          "P6.14",
+          "P6.15",
+          "P6.16",
+          "P6.17",
+          "P6.18",
+          "P6.19",
+          "P6.20",
+          "P6.21"
+        ]
+      },
+      {
+        "id": "D04",
+        "area": "versions crate 7 (upstream uses 8)",
+        "starshell": "formatter/version.rs calls Versioning::General(v).nth_lenient(i).",
+        "upstream": "calls .nth(i).",
+        "when_porting": "Keep nth_lenient while versions is pinned at 7.",
+        "rules": [
+          "P6.11"
+        ]
+      },
+      {
+        "id": "D05",
+        "area": "git_status formatting helpers",
+        "starshell": "modules/git_status.rs defines private format_text / format_count / format_symbol; modules/utils/mod.rs does not declare a format module.",
+        "upstream": "git_status.rs calls format::text / format::count / format::symbol from modules/utils/format.rs.",
+        "when_porting": "P1.1 copies upstream's three functions from format.rs of the release being built, so changes to them arrive by themselves; P6.13 translates `format::x(` calls. If git_status.rs starts to use a further function of format.rs, add it to P1.1's `items` and `rename`.",
+        "rules": [
+          "P1.1",
+          "P2.5",
+          "P5.26",
+          "P6.12",
+          "P6.13"
+        ]
+      },
+      {
+        "id": "D06",
+        "area": "username: SSH detection",
+        "starshell": "modules/username.rs has a private is_ssh_session(context) that checks SSH_CONNECTION, SSH_CLIENT and SSH_TTY.",
+        "upstream": "Context::is_ssh_session() in context/mod.rs, shared with the hostname module.",
+        "when_porting": "P6.1 carries the private function as text: when upstream changes Context::is_ssh_session, change the function in P6.1 to match.",
+        "rules": [
+          "P5.15",
+          "P6.1",
+          "P6.2"
+        ]
+      },
+      {
+        "id": "D07",
+        "area": "directory: Windows and the symlink test",
+        "starshell": "modules/directory.rs imports directory_nix unconditionally as `directory_utils`; its `#[cfg(windows)]` blocks are otherwise upstream's. The test highlight_git_root_dir_symlinked_out_of_tree is #[ignore]d as upstream's is, but sets the canonical physical path with .path() and the symlink as the logical path with .logical_path(), which is what a real shell does.",
+        "upstream": "Selects directory_nix or directory_win for `directory_utils` by target_os. Its version of the test passes the symlink as the physical path, and in starshell's harness that passes even without the fix because no repository is discovered.",
+        "when_porting": "Keep the physical/logical form of the test. Directory tests that are #[ignore]d create files under $HOME; run them with a scratch HOME (verification).",
+        "rules": [
+          "P2.4",
+          "P5.26",
+          "P5.27",
+          "P5.28",
+          "P5.29",
+          "P5.30",
+          "P6.25",
+          "P6.26"
+        ]
+      },
+      {
+        "id": "D08",
+        "area": "identity: main.rs, build.rs, Cargo.toml",
+        "starshell": "main.rs imports `starshell::...`, uses the starshell bin name and `about` text; build.rs only calls shadow_rs::ShadowBuilder::builder().build().",
+        "upstream": "`starship::...`, starship strings; build.rs also hooks preset generation and, on Windows, compiles a resource file.",
+        "when_porting": "P6.8-P6.10 translate the names (naming_translation). build.rs is the template of P7.2: carry a change to upstream's shadow builder call into the template; the preset hook and the Windows block stay out.",
+        "rules": [
+          "P6.8",
+          "P6.9",
+          "P6.10",
+          "P7.2"
+        ]
+      },
+      {
+        "id": "D09",
+        "area": "removed features: presets and env_var",
+        "starshell": "No Preset type, preset_command, preset_list or `preset` subcommand and no presets directory; no env_var module, no Config::get_env_var_modules, no env_var branch in print.rs's handle_module and its implicit-module logic, and no `env_var` key allowance in utils/serde.rs (whose test uses [git_commit] where upstream uses [rust]); the module is absent from every wiring point as well (D01). build.rs has no preset generation.",
+        "upstream": "All of the above.",
+        "when_porting": "The mould cuts these. A new upstream use of Preset, preset or env_var in a kept file shows up in the residue gate: add a cut rule (mould.when_a_rule_does_not_apply).",
+        "rules": [
+          "P5.1",
+          "P5.2",
+          "P5.3",
+          "P5.4",
+          "P5.5",
+          "P5.6",
+          "P5.7",
+          "P5.8",
+          "P5.9",
+          "P5.10",
+          "P7.2"
+        ]
+      },
+      {
+        "id": "D10",
+        "area": "Cargo.toml",
+        "starshell": "Package name, authors, description and no crates.io metadata (documentation, homepage, include, keywords, categories, readme, repository). `default = []`; only the config-schema feature. Dependency set is the subset the shipped code uses (see dependency_map). No Windows dependency tables, no build-dependency on dunce. gix lists the zlib-rs feature (upstream's list does not). The release profile sets panic = \"abort\" (upstream's does not). The dev-dependency `mockall` (=0.15.0) is kept although nothing in src/ references it; upstream uses it only for the battery module's tests.",
+        "upstream": "Full metadata; default features battery and notify; the dependency set of every module; Windows tables.",
+        "when_porting": "The manifest is the template of P7.1 (mould.manifest_policy). Add a dependency to it only if kept code references it (check dependency_map). Do not copy features or Windows tables. Version requirements: see dependency_versions.",
+        "rules": [
+          "P2.1",
+          "P7.1"
+        ]
+      },
+      {
+        "id": "D11",
+        "area": "test scaffolding: test/mod.rs",
+        "starshell": "ModuleRenderer and fixture_repo support git only: FixtureProvider has the single variant Git; the HG_FIXTURE constant is gone, but src/test/fixtures/hg-repo.bundle stays in the repository although no test uses it. The `git_trust` builder sits directly after `logical_path`.",
+        "upstream": "Also JJTester / jj_repo(), Hg, Fossil, Jujutsu and Pijul fixture providers, an HG_FIXTURE constant, and a battery provider hook; `git_trust` sits before `logical_path`.",
+        "when_porting": "Builders that shipped modules' tests use arrive by themselves; the providers for unshipped VCS and battery are cut by P5.16-P5.20.",
+        "rules": [
+          "P2.7",
+          "P5.16",
+          "P5.17",
+          "P5.18",
+          "P5.19",
+          "P5.20",
+          "P5.21"
+        ]
+      },
+      {
+        "id": "D12",
+        "area": "utils/mod.rs and modules/utils: helpers whose only callers are unshipped modules",
+        "starshell": "No context_path, render_time, humanize_int, encode_to_hex (with HEXTABLE) or their tests, including the sha1_hex test. mock_cmd's canned-output table (used by tests) holds only dummy_command and the python / pyenv commands. read_file's bounded read has no `#[allow(clippy::disallowed_methods)]` (see D15). Everything else is upstream's, including the bounded read_file, write_file_atomic and create_command. modules/utils has no truncate module.",
+        "upstream": "Has them; their callers are the container, aws, pulumi, cmd_duration and claude_* modules. modules/utils/truncate.rs is used only by the meson, pijul_channel, fossil_branch, jj_bookmark and hg_branch modules.",
+        "when_porting": "The mould cuts those helpers (P5.22-P5.23) and rebuilds mock_cmd's table from the commands that shipped modules' tests run (P5.24; extend its `keep` list when a shipped module's tests run another command). P5.25 removes the lint allow from read_file (D15). If a shipped module ever needs a removed helper, drop its cut and keep the helper with its tests.",
+        "rules": [
+          "P2.6",
+          "P5.22",
+          "P5.23",
+          "P5.24",
+          "P5.25",
+          "P5.26"
+        ]
+      },
+      {
+        "id": "D13",
+        "area": "Claude Code statusline data: utils/statusline.rs",
+        "starshell": "ClaudeCodeData has no `effort` field and there is no EffortInfo struct. The statusline structs derive Deserialize with #[serde(default)] and do not deny unknown fields, so the extra key in Claude Code's JSON is ignored. No shipped module reads claude_code_data.",
+        "upstream": "ClaudeCodeData.effort: Option<EffortInfo>, read by the claude_model module.",
+        "when_porting": "Add a field to these structs only when a shipped module reads it (and drop its cut, P5.31-P5.32).",
+        "rules": [
+          "P5.31",
+          "P5.32"
+        ]
+      },
+      {
+        "id": "D15",
+        "area": "lint policy",
+        "starshell": "Upstream's repository tooling and lint-policy files are not carried over (mould rule P2.1 keeps only LICENSE, build.rs, Cargo.toml and src at the root; README.md and Cargo.lock are starshell's own). lib.rs and main.rs still contain upstream's crate-level `#![warn(clippy::disallowed_methods)]`, and create_command() in utils/mod.rs keeps its single `#[allow(clippy::disallowed_methods)]` on Command::new, but with no lint policy configured that lint never fires, so neither line has an effect.",
+        "upstream": "A lint policy forbids Command::new, direct file reads and similar calls outside the sanctioned helpers; clippy enforces it.",
+        "when_porting": "Keep those lines as upstream has them. The rules the policy enforces upstream hold here by review and by the grep checks in upstream_sync.verification.also_check: Command::new only inside utils::create_command, file reads of repository-dependent paths only through utils::read_file.",
+        "rules": [
+          "P2.1"
+        ]
+      },
+      {
+        "id": "D14",
+        "area": "modules/mod.rs: description() text of the four git modules",
+        "starshell": "git_branch: `The active branch of the repo in your current directory`; git_commit: `The active commit (and tag if any) of the repo in your current directory`; git_state: `The current git operation, and it's progress`; git_status: `Symbol representing the state of the repo`. This is the text `starshell module --list` prints.",
+        "upstream": "git_branch: `The active branch of the current Git repo`; git_commit: `The active commit (and tag if any) of the current Git repo`; git_state: `The current Git operation, and it's progress`; git_status: `Symbols representing the state of the current Git repo, filtered to your current directory`.",
+        "when_porting": "Keep starshell's wording; the upstream wording was written to tell Git and Jujutsu modules apart.",
+        "rules": [
+          "P6.4",
+          "P6.5",
+          "P6.6",
+          "P6.7"
+        ]
+      }
+    ],
+    "dependency_versions": {
+      "policy": "Cargo.toml version requirements are not kept in step with upstream; Cargo.lock pins what actually builds. The three crates below cross a breaking boundary and are why ported code needs translating. All other requirements are at most patch or minor releases behind within the same major series. The Cargo.toml template (mould P7.1) carries these requirements and the translations are mould rules (P6, D03 and D04): a release that needs a newer requirement changes the template, not the built tree.",
+      "behind_upstream_at_baseline": [
+        {
+          "crate": "gix",
+          "starshell": "0.85.0",
+          "upstream_1_27_0": "0.89.0",
+          "consequence": "D03"
+        },
+        {
+          "crate": "versions",
+          "starshell": "7.0.0",
+          "upstream_1_27_0": "8.0.1",
+          "consequence": "D04"
+        },
+        {
+          "crate": "dirs",
+          "starshell": "6.0.0",
+          "upstream_1_27_0": "7.0.0",
+          "consequence": "none observed: dirs is called at three sites (dirs::config_dir in bug_report.rs, dirs::cache_dir in logger.rs, dirs::home_dir in utils/mod.rs) and all three compile against both majors"
+        }
+      ],
+      "when_a_bump_is_required": "A ported hunk does not compile against the pinned version, or a security advisory names the pinned version. Bump only that crate, re-run verification, remove its entry above and its translation from intentional_divergences."
+    },
+    "verification": {
+      "commands": [
+        "cargo fmt --check",
+        "cargo clippy --all-targets -- -D warnings",
+        "cargo clippy --all-targets --features config-schema -- -D warnings",
+        "cargo test",
+        "cargo build --release",
+        "cargo build --locked   # after Cargo.lock has been regenerated: proves the lock file is consistent"
+      ],
+      "environment": [
+        "git >= 2.45 is required: fixture_repo() clones with --ref-format=reftable. On an older git that clone fails and dozens of git-module tests fail with it (69 at 1.27.0 on git 2.43), none of them because of the code under test -- do not conclude a port is broken from such a run; upgrade git. The suite has 416 non-ignored and 22 #[ignore]d tests at 1.27.0 (informational: a sudden drop after a port means tests were lost).",
+        "Tests marked #[ignore] (the directory tests that build real symlinks) write under $HOME. Run them with a scratch HOME: `HOME=$(mktemp -d) cargo test -- --ignored`."
+      ],
+      "also_check": [
+        "grep -rn 'fs::read_to_string\\|fs::read(\\|read_to_string' src -- every file read of repository-dependent paths goes through utils::read_file (known_footguns: reading files).",
+        "grep -rn 'Command::new' src -- create_command() in utils/mod.rs stays the only call site.",
+        "Wiring: cargo test runs test_all_modules_is_in_alphabetical_order, test_all_modules_in_full_config and all_modules_have_description (module_wiring_contract).",
+        "Init scripts: after copying, `diff` each against upstream's; all ten must remain byte-identical (init_system.upstream_parity).",
+        "Mould: run mould.gates on every built tree, and mould.self_tests whenever the mould or one of the files it produces changes and at the new baseline after a port."
+      ]
+    },
+    "reconciliation_log": [
+      {
+        "release": "1.27.0",
+        "date": "2026-10-17",
+        "ported": [
+          {
+            "item": "GHSA-679r: avoid running sensitive git commands in untrusted environments",
+            "files": ["context.rs", "modules/git_status.rs", "modules/git_branch.rs", "test/mod.rs"],
+            "what": "GitRepo.trust from gix git_dir_trust(); exec_git requires full trust; exec_git_with_required_trust for the fixed symbolic-ref and for-each-ref queries; use_git_executable(); uses_reftables() moved from git_status.rs onto GitRepo; git_status falls back to gix at reduced trust."
+          },
+          {
+            "item": "GHSA-x486: avoid unbounded file reads",
+            "files": ["utils/mod.rs", "bug_report.rs", "logger.rs"],
+            "what": "read_file opens non-blocking, accepts regular files only, reads at most 100 MiB; the four direct fs::read_to_string sites now call it. modules/python.rs's pyvenv.cfg read is left as upstream has it."
+          },
+          {
+            "item": "directory: render symlinks pointing into a repo subdirectory",
+            "files": ["modules/directory.rs"],
+            "what": "a path that does not contract against the repo root renders whole instead of making the module disappear; test rewritten (D07)."
+          },
+          {
+            "item": "bash: avoid duplicating the PS0 preexec hook; right prompt via Flyline",
+            "files": ["init/starship.bash"],
+            "what": "file is byte-identical to upstream again."
+          },
+          {
+            "item": "git_branch: ignore_remotes option",
+            "files": ["configs/git_branch.rs", "modules/git_branch.rs"],
+            "what": "remote_name is hidden when the upstream's remote is listed."
+          },
+          {
+            "item": "repo type rename to upstream's names",
+            "files": ["context.rs", "modules/git_commit.rs", "modules/git_state.rs", "modules/custom.rs", "modules/directory.rs"],
+            "what": "Repo -> GitRepo, Remote -> GitRemote, get_repo() -> get_git_repo(), so later diffs against upstream line up."
+          }
+        ],
+        "skipped": [
+          {"item": "jj_bookmark, jj_change, jj_metrics, jj_status modules; Jujutsu in vcs; jj output parsing", "reason": "modules not shipped (modules.not_present)"},
+          {"item": "claude_model: effort variable", "reason": "claude_model not shipped (D13)"},
+          {"item": "package: zig, gradle.kts", "reason": "module not shipped"},
+          {"item": "terraform .tofu files; nim; openstack; pulumi; sudo; swift", "reason": "modules not shipped"},
+          {"item": "hostname: check SSH_CLIENT and SSH_TTY", "reason": "no hostname module; username's is_ssh_session already checks all three variables (D06)"},
+          {"item": "preset: pad OS icon instead of username", "reason": "presets not shipped (D09)"},
+          {"item": "utils: humanize_int rounding", "reason": "function not present (D12)"}
+        ],
+        "other_changes": [
+          "Cargo.toml version 0.1.0 -> 1.27.0: the version now mirrors the reconciled upstream release (project.relationship_to_upstream).",
+          "architecture.json gained the `mould`: version-independent rules that turn any upstream release (1.26.0 and later) into starshell's source tree, and reproduce this release byte for byte."
+        ]
+      }
+    ]
+  },
+
+  "mould": {
+    "purpose": "The mould that turns any upstream Starship release into starshell. Apply it to a clean copy of the upstream source of release R and the result is starshell's source tree for R. Applied to the baseline release it reproduces src/, Cargo.toml, build.rs and LICENSE of this repository byte for byte; applied to a newer release it yields the tree starshell would have if every upstream change to code starshell keeps had been ported, so the difference between that result and the repository is the port (upstream_sync.procedure). The mould is not rewritten per release: its rules name code items (functions, structs, impl blocks, match arms, fields), never line numbers, so they find their targets wherever upstream moves them.",
+    "formula": "starshell(R) = canonicalise( templates + upstream(R) - cuts + additions + translations ). templates: Cargo.toml and build.rs (P7). cuts: files, module wiring, the context/ directory merge and unshipped code (P2-P5). additions and translations: P1 and P6. canonicalise: P8.",
+    "principle": [
+      "Parity by default: upstream code that no rule names flows through unchanged. Every upstream fix, feature and refactor in code starshell keeps therefore arrives by itself when the mould is applied to a newer release; nothing is ported by hand.",
+      "Deny by default in exactly two places: which modules exist (src/modules and src/configs keep only parameters.shipped_modules, P2.2-P2.3) and what sits at the repository root (only LICENSE, build.rs, Cargo.toml and src, P2.1). A module, config or top-level file that upstream adds later is dropped without any rule being written.",
+      "Every other difference from upstream is a rule, tagged with the divergence it implements (`div`; upstream_sync.intentional_divergences). A difference that no rule produces must not exist in the repository.",
+      "Rules are anchored by symbol, not by position: a rule names the item it acts on (fn, struct, enum, impl, mod, use, const, static, field, variant, match arm) and the container it sits in. A rule whose target does not exist in a release is vacuous, not an error: there is nothing to cut or translate there.",
+      "Rules are idempotent: a rule either finds its target in upstream's form, finds nothing, or (rules that add text) carries an `unless` guard. Applying the mould to starshell's own files changes nothing: starshell is a fixed point of the mould (self_tests T2)."
+    ],
+    "input": "The source of upstream release R: a release source archive, `git archive` output of tag vR, or the crates.io source package of starship R. Always work on a copy in an empty scratch directory: the rules delete, move and rewrite files, and P2.1 deletes every entry at the root that is not kept, hidden ones such as .git included.",
+    "output": "starshell's src/, Cargo.toml, build.rs and LICENSE for release R. Nothing else in the repository is produced.",
+    "not_derived": {
+      "README.md": "Written by hand for starshell (fork notice, why the fork exists, the table of the twelve modules, build and license notes). P2.1 deletes upstream's README; the repository's stays.",
+      "Cargo.lock": "Generated, not derived. Copy the repository's Cargo.lock next to the built Cargo.toml before P8, so cargo resolves the dependency versions starshell is known to build with; afterwards only the starshell version line and genuinely changed dependencies may differ. Build without --locked the first time.",
+      "architecture.json": "This file."
+    },
+    "how_to_use": [
+      "1. Copy the upstream source of release R into an empty scratch directory (mould.input).",
+      "2. Apply the phases P1 to P7 in order and the rules of each phase in listed order; every rule sees the files as the earlier rules left them. For each rule find its target as rule_semantics describes, apply it, and record `applied`, `vacuous` or `failed`. P1 must come before P2, because P2 deletes the file P1 copies from.",
+      "3. When a rule fails, or is vacuous where the gates later show it should not have been, follow when_a_rule_does_not_apply before going on. Never skip an edit that is still needed.",
+      "4. P8: copy the repository's Cargo.lock into the scratch directory and run its commands there, in order. A compile error here means a rule is missing or no longer fits the release (when_a_rule_does_not_apply).",
+      "5. Run the gates on the result.",
+      "6. Compare the scratch directory's src/, Cargo.toml, build.rs and LICENSE with the repository. The difference is the port of everything upstream changed since the baseline in code starshell keeps; upstream_sync.procedure continues from here."
+    ],
+    "parameters": {
+      "shipped_modules": ["character", "custom", "directory", "git_branch", "git_commit", "git_state", "git_status", "line_break", "os", "python", "time", "username"],
+      "note": "Must equal the names in modules.list. `$shipped_modules` in a rule stands for this list. `{upstream_version}` in the Cargo.toml template (P7.1) stands for the `version` of [package] in upstream's Cargo.toml (for a crates.io source package, the version line of its Cargo.toml)."
+    },
+    "rule_semantics": {
+      "model": "A rule is a JSON object: `id`, `op` (what to do), `div` (the divergence id or ids it implements), the operands of the op and `intent` (what the result must look like, in words). When the mechanical form of a rule does not fit a release, achieve its `intent`.",
+      "files": "Paths are relative to the root of the scratch directory; text is UTF-8 with `\\n` line ends and every file ends with one newline. Rules that name items work on whole lines: an element's first line is the line of its first attribute or comment.",
+      "locators": {
+        "form": "`<kind> <name>`.",
+        "item": "`fn`, `struct`, `enum`, `union`, `trait`, `mod`, `const`, `static`, `type` followed by the identifier, e.g. `fn get_git_repo`, `struct Context`, `mod tests`. Only direct children of the container are searched. A function declared several times under different #[cfg] attributes matches every declaration.",
+        "use": "`use <path>`: the `use` declaration whose path, from after `use` to before `;` with whitespace normalised, equals <path> exactly, e.g. `use super::utils::directory_win as directory_utils`.",
+        "impl": "`impl <Type>` or `impl <Trait> for <Type>`: every impl block whose header (the generic parameter list after `impl` removed, whitespace normalised) equals the text or starts with it followed by `<` or a space. `impl Context` matches `impl Context {` and `impl<'a> Context<'a> {`, not `impl ContextFoo`.",
+        "field, variant": "`field <name>` / `variant <name>`: a member of the struct / enum that is the container.",
+        "arm": "`arm <pattern>`: a match arm whose pattern text (before `=>`, a guard included) equals <pattern> or starts with it followed by a character that cannot continue a path: `arm Commands::Preset` matches `Commands::Preset { .. } =>`, `arm \"git_branch\"` matches `\"git_branch\" => ...`. Arms are searched in every `match` inside the container, nested matches included."
+      },
+      "common_fields": {
+        "in": "Container path, outermost first: a list of locators, each searched in the body of the one before (the first in the whole file). A step that matches several elements, such as several `impl Context` blocks, stands for all of them. Without `in`, targets are searched among the top-level items of the file.",
+        "occurrence": "When a `target` matches several elements: 1 is the first, -1 the last. `anchor_occurrence` does the same for `relative_to`.",
+        "unless": "A text. If the rule's file already contains it, the rule is vacuous (already satisfied).",
+        "count": "On `edit` and `regex`: the exact number of replacements the rule must make; a different positive number makes the rule fail.",
+        "$shipped_modules": "In `keep`: the list parameters.shipped_modules."
+      },
+      "element": "An element is a whole item, field, variant or arm: the attributes (`#[...]`) and comment lines directly above it with no blank line between (a `//!` comment does not attach), the item up to its closing brace or `;`, and, for fields, variants and arms, the trailing `,`.",
+      "blank_lines": "Deleting or moving an element removes whole lines. A blank line that the removal would leave doubled, directly after an opening bracket, or directly before a closing bracket is dropped. `cargo fmt` (P8) normalises everything else.",
+      "outcomes": {
+        "applied": "The rule changed the tree.",
+        "vacuous": "The rule's file, container, target or text does not exist in this release, or its `unless` text is present: nothing to do. Expected: most rules are vacuous on a release that lacks the code they cut. A vacuous rule is wrong only when a gate then shows what it should have handled (when_a_rule_does_not_apply).",
+        "failed": "The target exists but the rule cannot be applied as written: a locator that must match one element matches several, a `count` differs, or a file does not parse."
+      },
+      "ops": {
+        "delete": "Delete the elements named by `target` (one locator) or `targets` (several), inside `in` if given; with `match` {kind, name, body} instead, every direct child of the container whose kind is `kind`, whose name contains a match of the regex `name` and whose text contains a match of the regex `body`. A locator that matches several elements fails unless `all` is true.",
+        "replace": "Replace the one element named by `target` with the lines of `with`.",
+        "insert": "Insert the lines of `lines` as a block `where` = before | after the element named by `relative_to`, with one blank line between block and element.",
+        "move": "Take the element named by `target` out of its place and put it before | after (`where`) the element named by `relative_to`, with one blank line between them.",
+        "inline_items": "Copy the items named in `items` from the file `from` (as it is before P2 deletes it); with `private`, drop each item's leading `pub` / `pub(..)`; for each pair in `rename` rename `fn <old>` and every call `<old>(` that is not preceded by a word character, `.` or `:`; join the items with one blank line and insert them like `insert` does (`relative_to`, `where`).",
+        "edit": "Replace the exact text `old` by `new` in the file, or only inside the element named by the last locator of `in` (that element must be unique). A list for `old` or `new` stands for its lines joined with newlines.",
+        "regex": "As `edit`, with the regular expression `pattern` (Python `re` syntax; `flags`: s = `.` matches newline, m = `^` and `$` match at every line, i = ignore case) and a replacement `repl` that may use \\1 back-references.",
+        "strip_attr": "Delete the line that is exactly `attr` from the attributes of the element named by `target`.",
+        "delete_cfg_gated": "In every .rs file under src/ delete each element (item, field, variant, statement or initialiser) that carries the attribute `attr`, together with the attribute; a field, initialiser or statement runs to its terminating `,` or `;`. Repeat until none is left.",
+        "keep_arms": "In the function named by `in`, keep only the arms of the first `match` in its body whose pattern text (quotes included) fully matches one of the regexes of `keep`, ordered by the first regex they match (arms that match the same regex keep upstream's order), directly one under the other without blank lines; delete the other arms.",
+        "remove_blank_lines": "Delete every blank line of `file`.",
+        "delete_path": "Delete the file or directory `path`; absent: vacuous.",
+        "keep_only": "In the directory `dir` delete every entry, hidden ones included, whose name is not in `keep` (each name followed by `suffix` when given) or `also_keep`.",
+        "write_file": "Create or overwrite `path` with `lines` joined with newlines plus a final newline; then replace each key of `substitute` in the text by the value its description gives.",
+        "merge_module_dir": "Combine the directory module `dir` (mod.rs and sibling files) into the single file `into`: start from dir/mod.rs, delete every `mod X;` / `pub mod X;` declaration and every `use X::...;` re-export whose X is a sibling file; then for each sibling file not listed in `cut`, in file-name order, insert its items (everything from its first item that is not a `use` to its last item) directly above the element `anchor`, with one blank line between block and anchor; write the result to `into` and delete `dir`. The siblings' own `use` lines are not copied: imports that the merged items need and `into` lacks are added by rules (P4.2) or, when a release needs more, by hand (when_a_rule_does_not_apply). When `dir` does not exist the rule is vacuous: the release still has the single file.",
+        "filter_string_array": "In `file`, the array that starts at the line beginning `pub const <array>` and ends at the first later line equal to `];` keeps only the lines of the form `\"name\",` (leading whitespace allowed) whose name is in `keep`, in their original order. The opening and closing lines stay; every other line between them (attributes, comments, names not kept) is removed.",
+        "filter_mod_declarations": "In `file`, every unindented line `mod name;` or `pub mod name;` whose name is in neither `keep` nor `always_keep` is removed, together with the run of attribute lines (lines starting `#[`) directly above it. Other lines, `pub use` lines included, are untouched.",
+        "filter_match_arms": "In `file`, inside `pub fn <fn>`, find the line `match module {`. Its arms sit one indentation level deeper. An arm starts at a line `\"name\" =>` or `<identifier> if <condition> =>`, together with the attribute lines at that indentation directly above it, and runs up to the line before the next arm or before the closing brace of the match; the continuation lines of a multi-line arm belong to it. Keep an arm when its name is in `keep`, when its identifier is in `always_keep_guards`, or when it is the default arm `_ =>`; remove every other arm. Comment lines before the first arm stay.",
+        "filter_struct_fields": "In `file`, in `pub struct <struct>`, after the line whose trimmed text equals `after_comment`, remove every field line `    name: ...` (four spaces) whose name is not in `keep`, together with the attribute lines directly above it. All other lines stay."
+      },
+      "p8": "P8 is not a rule: run its `commands` in the scratch directory, in order."
+    },
+    "phases": [
+      {
+        "id": "P1",
+        "title": "Transplant code that starshell keeps but upstream keeps in a file starshell drops",
+        "why": "Runs first: P2 deletes the source files.",
+        "rules": [
+          {
+            "id": "P1.1",
+            "op": "inline_items",
+            "div": "D05",
+            "file": "src/modules/git_status.rs",
+            "from": "src/modules/utils/format.rs",
+            "items": ["fn text", "fn count", "fn symbol"],
+            "private": true,
+            "rename": {"text": "format_text", "count": "format_count", "symbol": "format_symbol"},
+            "relative_to": "fn git_status_wsl",
+            "anchor_occurrence": 1,
+            "where": "before",
+            "intent": "git_status.rs carries its own private copies of upstream's three formatting helpers, renamed format_text / format_count / format_symbol, placed above git_status_wsl."
+          }
+        ]
+      },
+      {
+        "id": "P2",
+        "title": "Reduce the checkout to the files starshell keeps",
+        "why": "Deny by default for the repository root, src/modules and src/configs; everything else under src/ is kept.",
+        "rules": [
+          {
+            "id": "P2.1",
+            "op": "keep_only",
+            "div": ["D10", "D15"],
+            "dir": ".",
+            "keep": ["LICENSE", "build.rs", "Cargo.toml", "src"],
+            "intent": "Drop everything outside src/ that starshell does not ship (docs, install scripts, media, CI, README, Cargo.lock ...). Cargo.toml and build.rs are rewritten from templates in P7; Cargo.lock is generated."
+          },
+          {
+            "id": "P2.2",
+            "op": "keep_only",
+            "div": "D01",
+            "dir": "src/modules",
+            "keep": "$shipped_modules",
+            "also_keep": ["mod.rs", "utils"],
+            "suffix": ".rs",
+            "intent": "src/modules keeps <module>.rs for each shipped module, mod.rs and utils/."
+          },
+          {
+            "id": "P2.3",
+            "op": "keep_only",
+            "div": "D01",
+            "dir": "src/configs",
+            "keep": "$shipped_modules",
+            "also_keep": ["mod.rs", "starship_root.rs"],
+            "suffix": ".rs",
+            "intent": "src/configs keeps <module>.rs for each shipped module, mod.rs and starship_root.rs."
+          },
+          {"id": "P2.4", "op": "delete_path", "div": "D07", "path": "src/modules/utils/directory_win.rs", "intent": "Windows-only directory helper."},
+          {"id": "P2.5", "op": "delete_path", "div": "D05", "path": "src/modules/utils/format.rs", "intent": "Replaced by the local helpers inlined in P1."},
+          {"id": "P2.6", "op": "delete_path", "div": "D12", "path": "src/modules/utils/truncate.rs", "intent": "Only unshipped modules use it."},
+          {"id": "P2.7", "op": "delete_path", "div": "D11", "path": "src/test/jj_tester.rs", "intent": "Jujutsu test harness."}
+        ]
+      },
+      {
+        "id": "P3",
+        "title": "Wire exactly the shipped modules",
+        "why": "The four registration points of module_wiring_contract.",
+        "rules": [
+          {"id": "P3.1", "op": "filter_string_array", "div": "D01", "file": "src/module.rs", "array": "ALL_MODULES", "keep": "$shipped_modules", "intent": "ALL_MODULES lists the shipped modules, in upstream's (alphabetical) order."},
+          {
+            "id": "P3.2",
+            "op": "filter_string_array",
+            "div": "D01",
+            "file": "src/configs/starship_root.rs",
+            "array": "PROMPT_ORDER",
+            "keep": "$shipped_modules",
+            "intent": "PROMPT_ORDER keeps upstream's relative order for the shipped modules."
+          },
+          {"id": "P3.3", "op": "filter_mod_declarations", "div": "D01", "file": "src/modules/mod.rs", "keep": "$shipped_modules", "always_keep": ["utils"], "intent": "One `mod` declaration per shipped module, plus utils."},
+          {
+            "id": "P3.4",
+            "op": "filter_match_arms",
+            "div": "D01",
+            "file": "src/modules/mod.rs",
+            "fn": "handle",
+            "keep": "$shipped_modules",
+            "always_keep_guards": ["custom"],
+            "intent": "handle() dispatches the shipped modules; the `custom` guard arm stays."
+          },
+          {"id": "P3.5", "op": "filter_match_arms", "div": "D01", "file": "src/modules/mod.rs", "fn": "description", "keep": "$shipped_modules", "intent": "description() has one arm per shipped module."},
+          {"id": "P3.6", "op": "filter_mod_declarations", "div": "D01", "file": "src/configs/mod.rs", "keep": "$shipped_modules", "always_keep": ["starship_root"], "intent": "One config `mod` per shipped module, plus starship_root."},
+          {"id": "P3.7", "op": "filter_struct_fields", "div": "D01", "file": "src/configs/mod.rs", "struct": "FullConfig", "after_comment": "// modules", "keep": "$shipped_modules", "intent": "FullConfig has one field per shipped module."}
+        ]
+      },
+      {
+        "id": "P4",
+        "title": "Merge upstream's context/ directory into one context.rs",
+        "why": "Upstream split context.rs into context/mod.rs + context/git_repo.rs + context/jj_repo.rs in 1.27.0; releases before that already have a single file, and this rule is then vacuous.",
+        "rules": [
+          {
+            "id": "P4.1",
+            "op": "merge_module_dir",
+            "div": "D02",
+            "dir": "src/context",
+            "into": "src/context.rs",
+            "cut": ["jj_repo.rs"],
+            "anchor": "struct ScanDir",
+            "intent": "context.rs = context/mod.rs with every submodule declaration and re-export removed, and the items (not the `use` lines) of git_repo.rs inserted directly above `struct ScanDir` (with its comment); jj_repo.rs is dropped."
+          },
+          {
+            "id": "P4.2",
+            "op": "edit",
+            "div": "D02",
+            "file": "src/context.rs",
+            "old": "sec::{self as git_sec, trust::DefaultForLevel},",
+            "new": ["sec::{self as git_sec, Trust as TrustLevel, trust::DefaultForLevel},", "    state as git_state,"],
+            "count": 1,
+            "unless": "state as git_state",
+            "intent": "Fold git_repo.rs's gix imports (`Trust as TrustLevel`, `state as git_state`) into the existing `use gix::{...}` list."
+          },
+          {
+            "id": "P4.3",
+            "op": "move",
+            "div": "D02",
+            "file": "src/context.rs",
+            "target": "struct GitRemote",
+            "relative_to": "impl GitRepo",
+            "where": "after",
+            "intent": "GitRemote is declared after the GitRepo impl block (upstream declares it between `struct GitRepo` and `impl GitRepo`)."
+          }
+        ]
+      },
+      {
+        "id": "P5",
+        "title": "Cut what starshell does not ship",
+        "why": "Each rule names the items it removes, so it applies wherever upstream keeps them; a rule whose item is absent is vacuous.",
+        "rules": [
+          {"id": "P5.1", "op": "delete", "div": "D09", "file": "src/main.rs", "in": ["enum Commands"], "target": "variant Preset", "intent": "No `preset` subcommand."},
+          {"id": "P5.2", "op": "delete", "div": "D09", "file": "src/main.rs", "target": "arm Commands::Preset", "intent": "No dispatch for the preset subcommand."},
+          {"id": "P5.3", "op": "delete", "div": "D09", "file": "src/print.rs", "targets": ["struct Preset", "impl ValueEnum for Preset", "fn preset_command", "fn preset_list"], "intent": "No Preset type, preset_command or preset_list."},
+          {"id": "P5.4", "op": "delete", "div": "D09", "file": "src/print.rs", "in": ["mod test"], "match": {"kind": "fn", "body": "preset"}, "all": true, "intent": "Delete every test that exercises presets."},
+          {"id": "P5.5", "op": "delete", "div": "D09", "file": "src/config.rs", "in": ["impl StarshipConfig"], "target": "fn get_env_var_modules", "intent": "No env_var module table accessor."},
+          {
+            "id": "P5.6",
+            "op": "edit",
+            "div": "D09",
+            "file": "src/print.rs",
+            "in": ["fn handle_module"],
+            "old": [
+              "    } else if module.starts_with(\"custom.\") || module.starts_with(\"env_var.\") {",
+              "        // custom.<name> and env_var.<name> are special cases and handle disabled modules themselves",
+              "        modules.extend(modules::handle(module, context));",
+              "    } else if matches!(module, \"custom\" | \"env_var\") {",
+              "        // env var is a spacial case and may contain a top-level module definition",
+              "        if module == \"env_var\" {",
+              "            modules.extend(modules::handle(module, context));",
+              "        }",
+              "",
+              "        // Write out all custom modules, except for those that are explicitly set"
+            ],
+            "new": [
+              "    } else if module.starts_with(\"custom.\") {",
+              "        // custom.<name> is a special case and handles disabled modules itself",
+              "        modules.extend(modules::handle(module, context));",
+              "    } else if module == \"custom\" {",
+              "        // Write out all custom modules, except for those that are explicitly set"
+            ],
+            "count": 1,
+            "intent": "handle_module treats only `custom` (and custom.<name>) specially; the env_var branches are gone."
+          },
+          {
+            "id": "P5.7",
+            "op": "edit",
+            "div": "D09",
+            "file": "src/print.rs",
+            "in": ["fn handle_module"],
+            "old": [
+              "                    // Some env var keys may be part of a top-level module definition",
+              "                    if module == \"env_var\" && !config.is_table() {",
+              "                        None",
+              "                    } else if should_add_implicit_module(module, child, config, module_list) {"
+            ],
+            "new": ["                    if should_add_implicit_module(module, child, config, module_list) {"],
+            "count": 1,
+            "intent": "The implicit-module filter no longer special-cases env_var."
+          },
+          {"id": "P5.8", "op": "delete", "div": "D09", "file": "src/print.rs", "in": ["mod test"], "match": {"kind": "fn", "body": "env_var"}, "all": true, "intent": "Delete every test that exercises env_var."},
+          {"id": "P5.9", "op": "edit", "div": "D09", "file": "src/utils/serde.rs", "old": " || key == \"env_var\"", "new": "", "count": 1, "intent": "env_var is no longer an accepted root key."},
+          {
+            "id": "P5.10",
+            "op": "regex",
+            "div": "D09",
+            "file": "src/utils/serde.rs",
+            "in": ["mod test", "fn test_deserialize_unknown_root_module"],
+            "flags": "m",
+            "pattern": "^(\\s*)let value = toml::toml! \\{\\n(\\s*)\\[rust\\]",
+            "repl": [
+              "\\1// A key that isn't a StarshipRootConfig field, but is a real module name",
+              "\\1// in this build's ALL_MODULES, should be silently tolerated at the root",
+              "\\1// level (it's a valid module table, just not a root-config field).",
+              "\\1let value = toml::toml! {",
+              "\\2[git_commit]"
+            ],
+            "count": 1,
+            "intent": "The test must name a module that is shipped: [git_commit] replaces [rust]."
+          },
+          {
+            "id": "P5.11",
+            "op": "delete_cfg_gated",
+            "div": "D01",
+            "attr": "#[cfg(feature = \"battery\")]",
+            "intent": "starshell has no `battery` feature: every item, field or initialiser gated on it is deleted (Context.battery_info_provider and its initialiser, the BatteryInfoProvider re-export, the test builder)."
+          },
+          {"id": "P5.12", "op": "delete", "div": "D02", "file": "src/context.rs", "in": ["struct Context"], "target": "field jj_repo", "intent": "No Jujutsu repo cache in Context."},
+          {
+            "id": "P5.13",
+            "op": "regex",
+            "div": "D02",
+            "file": "src/context.rs",
+            "in": ["impl Context", "fn new_with_shell_and_path"],
+            "flags": "m",
+            "pattern": "^[ \\t]*jj_repo: OnceLock::new\\(\\),\\n",
+            "repl": "",
+            "count": 1,
+            "intent": "Context::new_with_shell_and_path no longer initialises jj_repo."
+          },
+          {"id": "P5.14", "op": "delete", "div": "D02", "file": "src/context.rs", "in": ["impl Context"], "targets": ["fn get_jj_repo", "fn set_jj_repo"], "intent": "No Jujutsu accessors."},
+          {"id": "P5.15", "op": "delete", "div": "D06", "file": "src/context.rs", "in": ["impl Context"], "target": "fn is_ssh_session", "intent": "SSH detection moves into modules/username.rs (D06)."},
+          {"id": "P5.16", "op": "delete", "div": "D11", "file": "src/test/mod.rs", "targets": ["mod jj_tester", "use jj_tester::JJTester", "static HG_FIXTURE"], "intent": "No JJTester and no Mercurial fixture constant."},
+          {"id": "P5.17", "op": "edit", "div": "D11", "file": "src/test/mod.rs", "old": "Env, JJRepo, Properties", "new": "Env, Properties", "count": 1, "intent": "JJRepo no longer exists; this import would not resolve."},
+          {"id": "P5.18", "op": "delete", "div": "D11", "file": "src/test/mod.rs", "in": ["impl ModuleRenderer"], "target": "fn jj_repo", "intent": "No jj_repo test builder."},
+          {
+            "id": "P5.19",
+            "op": "delete",
+            "div": "D11",
+            "file": "src/test/mod.rs",
+            "in": ["enum FixtureProvider"],
+            "targets": ["variant Fossil", "variant Hg", "variant Jujutsu", "variant Pijul"],
+            "intent": "Git is the only fixture provider."
+          },
+          {
+            "id": "P5.20",
+            "op": "delete",
+            "div": "D11",
+            "file": "src/test/mod.rs",
+            "targets": [
+              "arm FixtureProvider::Fossil",
+              "arm FixtureProvider::Hg",
+              "arm FixtureProvider::Jujutsu",
+              "arm FixtureProvider::Pijul"
+            ],
+            "intent": "The fixture builders handle Git only."
+          },
+          {
+            "id": "P5.21",
+            "op": "move",
+            "div": "D11",
+            "file": "src/test/mod.rs",
+            "in": ["impl ModuleRenderer"],
+            "target": "fn git_trust",
+            "relative_to": "fn logical_path",
+            "where": "after",
+            "intent": "The git_trust builder sits directly after logical_path."
+          },
+          {
+            "id": "P5.22",
+            "op": "delete",
+            "div": "D12",
+            "file": "src/utils/mod.rs",
+            "targets": ["fn context_path", "fn render_time", "fn humanize_int", "const HEXTABLE", "fn encode_to_hex"],
+            "all": true,
+            "intent": "Helpers whose only callers are unshipped modules."
+          },
+          {"id": "P5.23", "op": "delete", "div": "D12", "file": "src/utils/mod.rs", "in": ["mod tests"], "match": {"kind": "fn", "body": "\\b(render_time|humanize_int|encode_to_hex)\\("}, "all": true, "intent": "Their tests go with them."},
+          {
+            "id": "P5.24",
+            "op": "keep_arms",
+            "div": "D12",
+            "file": "src/utils/mod.rs",
+            "in": ["fn mock_cmd"],
+            "keep": ["\"dummy_command\"", "\"python[0-9.]* [^\"]*\"", "\"pyenv [^\"]*\"", "_"],
+            "intent": "mock_cmd's canned-output table is rebuilt from dummy_command, the python commands and the pyenv command, in that order (the only commands shipped modules' tests run), without blank lines between arms; the default arm stays last."
+          },
+          {
+            "id": "P5.25",
+            "op": "regex",
+            "div": "D12",
+            "file": "src/utils/mod.rs",
+            "in": ["fn read_file"],
+            "flags": "m",
+            "pattern": "^[ \\t]*#\\[allow\\(clippy::disallowed_methods\\)\\]\\n",
+            "repl": "",
+            "count": 1,
+            "intent": "read_file's bounded read carries no lint allowance (D15: the lint cannot fire here)."
+          },
+          {
+            "id": "P5.26",
+            "op": "delete",
+            "div": ["D05", "D07", "D12"],
+            "file": "src/modules/utils/mod.rs",
+            "targets": ["mod directory_win", "mod format", "mod truncate"],
+            "intent": "The three utility modules whose files were deleted in P2."
+          },
+          {"id": "P5.27", "op": "strip_attr", "div": "D07", "file": "src/modules/utils/mod.rs", "target": "mod directory_nix", "attr": "#[cfg(not(target_os = \"windows\"))]", "intent": "directory_nix is declared unconditionally."},
+          {"id": "P5.28", "op": "remove_blank_lines", "div": "D07", "file": "src/modules/utils/mod.rs", "intent": "The file is a bare list of declarations without blank lines."},
+          {"id": "P5.29", "op": "delete", "div": "D07", "file": "src/modules/directory.rs", "target": "use super::utils::directory_win as directory_utils", "intent": "No Windows directory helper."},
+          {
+            "id": "P5.30",
+            "op": "strip_attr",
+            "div": "D07",
+            "file": "src/modules/directory.rs",
+            "target": "use super::utils::directory_nix as directory_utils",
+            "attr": "#[cfg(not(target_os = \"windows\"))]",
+            "intent": "directory_nix is imported unconditionally."
+          },
+          {"id": "P5.31", "op": "delete", "div": "D13", "file": "src/utils/statusline.rs", "target": "struct EffortInfo", "intent": "No EffortInfo (only the unshipped claude_model module reads it)."},
+          {"id": "P5.32", "op": "delete", "div": "D13", "file": "src/utils/statusline.rs", "in": ["struct ClaudeCodeData"], "target": "field effort", "intent": "ClaudeCodeData has no effort field."}
+        ]
+      },
+      {
+        "id": "P6",
+        "title": "Add starshell-only code and translate for pinned dependencies and identity",
+        "why": "Text rules scoped to the item they touch.",
+        "rules": [
+          {
+            "id": "P6.1",
+            "op": "insert",
+            "div": "D06",
+            "file": "src/modules/username.rs",
+            "relative_to": "fn is_root_user",
+            "anchor_occurrence": -1,
+            "where": "after",
+            "unless": "fn is_ssh_session(",
+            "lines": [
+              "fn is_ssh_session(context: &Context) -> bool {",
+              "    let ssh_env = [\"SSH_CONNECTION\", \"SSH_CLIENT\", \"SSH_TTY\"];",
+              "    ssh_env.iter().any(|env| context.get_env_os(env).is_some())",
+              "}"
+            ],
+            "intent": "Private SSH detection, checking SSH_CONNECTION, SSH_CLIENT and SSH_TTY."
+          },
+          {"id": "P6.2", "op": "regex", "div": "D06", "file": "src/modules/username.rs", "pattern": "context\\.is_ssh_session\\(\\)", "repl": "is_ssh_session(context)", "intent": "username calls its own function."},
+          {
+            "id": "P6.3",
+            "op": "regex",
+            "div": "D01",
+            "file": "src/configs/starship_root.rs",
+            "in": ["fn default_profiles"],
+            "flags": "s",
+            "pattern": "(\"claude-code\"\\.to_string\\(\\),\\s*)\"[^\"]*\"",
+            "repl": "\\1\"$git_branch\"",
+            "count": 1,
+            "intent": "The claude-code default profile is `$git_branch`."
+          },
+          {
+            "id": "P6.4",
+            "op": "replace",
+            "div": "D14",
+            "file": "src/modules/mod.rs",
+            "in": ["fn description"],
+            "target": "arm \"git_branch\"",
+            "with": ["        \"git_branch\" => \"The active branch of the repo in your current directory\","],
+            "intent": "starshell's description text."
+          },
+          {
+            "id": "P6.5",
+            "op": "replace",
+            "div": "D14",
+            "file": "src/modules/mod.rs",
+            "in": ["fn description"],
+            "target": "arm \"git_commit\"",
+            "with": [
+              "        \"git_commit\" => \"The active commit (and tag if any) of the repo in your current directory\","
+            ],
+            "intent": "starshell's description text."
+          },
+          {
+            "id": "P6.6",
+            "op": "replace",
+            "div": "D14",
+            "file": "src/modules/mod.rs",
+            "in": ["fn description"],
+            "target": "arm \"git_state\"",
+            "with": ["        \"git_state\" => \"The current git operation, and it's progress\","],
+            "intent": "starshell's description text."
+          },
+          {
+            "id": "P6.7",
+            "op": "replace",
+            "div": "D14",
+            "file": "src/modules/mod.rs",
+            "in": ["fn description"],
+            "target": "arm \"git_status\"",
+            "with": ["        \"git_status\" => \"Symbol representing the state of the repo\","],
+            "intent": "starshell's description text."
+          },
+          {"id": "P6.8", "op": "regex", "div": "D08", "file": "src/main.rs", "flags": "m", "pattern": "^use starship::", "repl": "use starshell::", "intent": "The binary imports the library crate under its starshell name."},
+          {"id": "P6.9", "op": "regex", "div": "D08", "file": "src/main.rs", "pattern": "about\\s*=\\s*\"[^\"]*\"", "repl": "about=\"A minimal, fast shell prompt.\"", "count": 1, "intent": "starshell's `about` text."},
+          {
+            "id": "P6.10",
+            "op": "regex",
+            "div": "D08",
+            "file": "src/main.rs",
+            "in": ["fn generate_shell"],
+            "pattern": "\"starship\",",
+            "repl": "\"starshell\",",
+            "count": 1,
+            "intent": "Completions are generated for the starshell binary name."
+          },
+          {"id": "P6.11", "op": "regex", "div": "D04", "file": "src/formatter/version.rs", "pattern": "\\bv\\.nth\\(", "repl": "v.nth_lenient(", "intent": "versions 7 spells Version::nth as nth_lenient."},
+          {"id": "P6.12", "op": "delete", "div": "D05", "file": "src/modules/git_status.rs", "target": "use super::utils::format", "intent": "The formatting helpers are local (inlined in P1)."},
+          {
+            "id": "P6.13",
+            "op": "regex",
+            "div": "D05",
+            "file": "src/modules/git_status.rs",
+            "pattern": "\\bformat::(text|count|symbol)\\(",
+            "repl": "format_\\1(",
+            "intent": "git_status calls its local format_text / format_count / format_symbol."
+          },
+          {"id": "P6.14", "op": "regex", "div": "D03", "file": "src/modules/git_status.rs", "pattern": "gix::progress::Discard", "repl": "gix::features::progress::Discard", "intent": "gix 0.85 keeps Discard under gix::features::progress."},
+          {"id": "P6.15", "op": "regex", "div": "D03", "file": "src/modules/git_branch.rs", "pattern": "gix::remote::Names(?!<)", "repl": "gix::remote::Names<'_>", "intent": "gix 0.85's Names carries a lifetime."},
+          {
+            "id": "P6.16",
+            "op": "edit",
+            "div": "D03",
+            "file": "src/context.rs",
+            "old": "OnceLock<Result<GitRepo, gix::Error>>",
+            "new": "OnceLock<Result<GitRepo, Box<gix::discover::Error>>>",
+            "count": 1,
+            "intent": "The cached discovery error is boxed gix::discover::Error."
+          },
+          {
+            "id": "P6.17",
+            "op": "edit",
+            "div": "D03",
+            "file": "src/context.rs",
+            "in": ["impl Context", "fn get_git_repo"],
+            "old": "-> Result<&GitRepo, &gix::Error>",
+            "new": "-> Result<&GitRepo, &gix::discover::Error>",
+            "count": 1,
+            "intent": "get_git_repo returns &gix::discover::Error."
+          },
+          {
+            "id": "P6.18",
+            "op": "edit",
+            "div": "D03",
+            "file": "src/context.rs",
+            "in": ["impl Context", "fn get_git_repo"],
+            "old": "-> Result<GitRepo, gix::Error> {",
+            "new": "-> Result<GitRepo, Box<gix::discover::Error>> {",
+            "count": 1,
+            "intent": "The init closure returns the boxed error."
+          },
+          {"id": "P6.19", "op": "edit", "div": "D03", "file": "src/context.rs", "in": ["impl Context", "fn get_git_repo"], "old": "return Err(e);", "new": "return Err(Box::new(e));", "count": 1, "intent": "Box the discovery error."},
+          {
+            "id": "P6.20",
+            "op": "regex",
+            "div": "D03",
+            "file": "src/context.rs",
+            "in": ["impl Context", "fn get_git_repo"],
+            "flags": "",
+            "pattern": "(\\}\\)\\n(\\s*)\\.as_ref\\(\\))",
+            "repl": "\\1\n\\2.map_err(std::convert::AsRef::as_ref)",
+            "count": 1,
+            "unless": ".map_err(std::convert::AsRef::as_ref)",
+            "intent": "Unbox the cached error on the way out."
+          },
+          {
+            "id": "P6.21",
+            "op": "edit",
+            "div": "D03",
+            "file": "src/context.rs",
+            "in": ["impl GitRepo", "fn uses_reftables"],
+            "old": "kind == \"reftable\"",
+            "new": "kind.as_ref() == \"reftable\"",
+            "count": 1,
+            "intent": "gix 0.85 returns a BStr here."
+          },
+          {
+            "id": "P6.22",
+            "op": "edit",
+            "div": "D02",
+            "file": "src/context.rs",
+            "in": ["impl GitRepo", "fn use_git_executable"],
+            "old": "for status and metrics only",
+            "new": "for status only",
+            "count": 1,
+            "intent": "git_metrics is not shipped."
+          },
+          {
+            "id": "P6.23",
+            "op": "edit",
+            "div": "D02",
+            "file": "src/context.rs",
+            "in": ["impl GitRepo", "fn use_git_executable"],
+            "old": "for status or metrics because",
+            "new": "for status because",
+            "count": 1,
+            "intent": "git_metrics is not shipped."
+          },
+          {"id": "P6.24", "op": "edit", "div": "D02", "file": "src/context.rs", "in": ["impl Context", "fn set_git_trust"], "old": "trust: gix::sec::Trust", "new": "trust: TrustLevel", "count": 1, "intent": "Use the imported alias."},
+          {
+            "id": "P6.25",
+            "op": "regex",
+            "div": "D07",
+            "file": "src/modules/directory.rs",
+            "flags": "m",
+            "in": ["mod tests", "mod linux", "fn highlight_git_root_dir_symlinked_out_of_tree"],
+            "pattern": "^(\\s*)let tmp_dir = TempDir::new_in\\(home_dir\\(\\)\\.unwrap\\(\\)\\.as_path\\(\\)\\)\\?;",
+            "repl": [
+              "\\1// As in a real shell, the physical directory is the resolved path",
+              "\\1// (which is where the repo is discovered) while the logical",
+              "\\1// directory is the symlink path that is displayed.",
+              "\\1let tmp_dir = TempDir::new_in(home_dir().unwrap().as_path())?;"
+            ],
+            "count": 1,
+            "unless": "As in a real shell, the physical directory is the resolved path",
+            "intent": "Explain the physical/logical split."
+          },
+          {
+            "id": "P6.26",
+            "op": "edit",
+            "div": "D07",
+            "file": "src/modules/directory.rs",
+            "in": ["mod tests", "mod linux", "fn highlight_git_root_dir_symlinked_out_of_tree"],
+            "old": ".path(symlink_dir)",
+            "new": [".path(dunce::canonicalize(&symlink_dir)?)", "                .logical_path(symlink_dir)"],
+            "count": 1,
+            "intent": "Pass the canonical path as the physical directory and the symlink as the logical one, as a real shell does; with the symlink as the physical path the test passes even without the fix."
+          }
+        ]
+      },
+      {
+        "id": "P7",
+        "title": "Write the manifest and build script from templates",
+        "why": "starshell owns its manifest; upstream's is read only for the release version and for requirement strings of crates the shipped code starts to need.",
+        "rules": [
+          {
+            "id": "P7.1",
+            "op": "write_file",
+            "div": "D10",
+            "path": "Cargo.toml",
+            "substitute": {"{upstream_version}": "the version of [package] in upstream's Cargo.toml"},
+            "lines": [
+              "[package]",
+              "name = \"starshell\"",
+              "version = \"{upstream_version}\"",
+              "authors = [\"Starshell Contributors\"]",
+              "build = \"build.rs\"",
+              "edition = \"2024\"",
+              "license = \"ISC\"",
+              "# Note: MSRV is only intended as a hint, and only the latest version is officially supported.",
+              "rust-version = \"1.95\"",
+              "description = \"A minimal, fast prompt with a hand-picked set of modules, built for Linux.\"",
+              "",
+              "[features]",
+              "default = []",
+              "config-schema = [\"schemars\"]",
+              "",
+              "[dependencies]",
+              "clap = { version = \"4.6.1\", features = [\"derive\", \"cargo\", \"unicode\"] }",
+              "clap_complete = \"4.6.7\"",
+              "clap_complete_nushell = \"4.6.0\"",
+              "dirs = \"6.0.0\"",
+              "dunce = \"1.0.5\"",
+              "# default feature restriction addresses https://github.com/starship/starship/issues/4251",
+              "gix = { version = \"0.85.0\", default-features = false, features = [\"max-performance-safe\", \"revision\", \"zlib-rs\", \"status\", \"sha1\", \"sha256\"] }",
+              "indexmap = { version = \"2.14.0\", features = [\"serde\"] }",
+              "jiff = { version = \"0.2.32\", features = [\"serde\"] }",
+              "log = { version = \"0.4.33\", features = [\"std\"] }",
+              "nu-ansi-term = \"0.50.3\"",
+              "open = \"5.4.0\"",
+              "# update os module config and tests when upgrading os_info",
+              "os_info = { version = \"3.15.0\", features = [\"schemars\"] }",
+              "# for efficient shared state between `git_status` and `git_metrics`, allowing parallel printing. This is for poison-free locks.",
+              "parking_lot = \"0.12.5\"",
+              "path-slash = \"0.2.1\"",
+              "pest = \"2.8.7\"",
+              "pest_derive = \"2.8.7\"",
+              "process_control = \"5.2.0\"",
+              "rand = \"0.10.2\"",
+              "rayon = \"1.12.0\"",
+              "regex = { version = \"1.13.0\", default-features = false, features = [\"perf\", \"std\", \"unicode-perl\"] }",
+              "rust-ini = \"0.21.3\"",
+              "serde = { version = \"1.0.228\", features = [\"derive\"] }",
+              "serde_json = \"1.0.150\"",
+              "shadow-rs = { version = \"2.0.0\", default-features = false, features = [\"build\"] }",
+              "shell-words = \"1.1.1\"",
+              "strsim = \"0.11.1\"",
+              "tempfile = \"3.27.0\"",
+              "terminal_size = \"0.4.4\"",
+              "toml = { version = \"1.1.2\", features = [\"preserve_order\"] }",
+              "toml_edit = \"0.25.12\"",
+              "unicode-segmentation = \"1.13.3\"",
+              "unicode-width = \"0.2.2\"",
+              "urlencoding = \"2.1.3\"",
+              "versions = \"7.0.0\"",
+              "which = \"8.0.4\"",
+              "whoami = { version = \"2.1.2\", default-features = false, features = [\"std\", \"wasi-wasite\"] }",
+              "",
+              "[dependencies.schemars]",
+              "version = \"1.2.1\"",
+              "optional = true",
+              "features = [\"preserve_order\", \"indexmap2\"]",
+              "",
+              "[target.'cfg(not(windows))'.dependencies]",
+              "nix = { version = \"0.31.3\", default-features = false, features = [\"feature\", \"fs\", \"user\"] }",
+              "",
+              "[build-dependencies]",
+              "shadow-rs = { version = \"2.0.0\", default-features = false, features = [\"build\"] }",
+              "",
+              "[dev-dependencies]",
+              "mockall = \"=0.15.0\"",
+              "",
+              "[profile.release]",
+              "codegen-units = 1",
+              "lto = true",
+              "strip = true",
+              "panic = \"abort\"",
+              "",
+              "[profile.bench]",
+              "codegen-units = 16",
+              "lto = \"thin\"",
+              "strip = false",
+              "",
+              "[lints.clippy]",
+              "use_self = \"warn\""
+            ],
+            "intent": "Cargo.toml := this template with {upstream_version} replaced by the version of the upstream release."
+          },
+          {
+            "id": "P7.2",
+            "op": "write_file",
+            "div": ["D08", "D09"],
+            "path": "build.rs",
+            "lines": [
+              "use shadow_rs::SdResult;",
+              "",
+              "fn main() -> SdResult<()> {",
+              "    shadow_rs::ShadowBuilder::builder().build()?;",
+              "",
+              "    Ok(())",
+              "}"
+            ],
+            "intent": "build.rs only calls the shadow-rs builder: no preset generation, no Windows resource."
+          }
+        ]
+      },
+      {
+        "id": "P8",
+        "title": "Canonicalise",
+        "why": "Removes the imports that the cuts left unused and normalises formatting.",
+        "commands": ["cargo fix --allow-no-vcs --allow-dirty --all-targets", "cargo fmt"]
+      }
+    ],
+    "when_a_rule_does_not_apply": [
+      {
+        "when": "A rule is vacuous because upstream dropped, or never had, the code it cuts or translates, and the gates show nothing left over.",
+        "then": "Nothing. The rule stays in the mould for the releases that still have the code."
+      },
+      {
+        "when": "A gate shows a leftover (a residue token, an unresolved import, an unknown field, a compile error) and the rule that should have handled it is vacuous or failed.",
+        "then": "Upstream renamed, moved or rewrote the item. Find its new form in the upstream source, re-target the rule (its locator or its text) so that it keeps its `intent`, and apply it. Re-targeting is the usual reason for editing an existing rule."
+      },
+      {
+        "when": "An `edit`, `regex` or `replace` rule fails because upstream changed the text it matches.",
+        "then": "Achieve the rule's `intent` on the new text by hand, then change the rule's text to match the new upstream so that it applies mechanically next time."
+      },
+      {
+        "when": "Upstream adds code in a kept file that depends on something starshell cuts (a use of Preset, env_var, a battery gate, JJRepo, ...), shown by the residue gate or by a compile error.",
+        "then": "Add a cut rule to P5 that names the new item (a `delete`, or a `delete_cfg_gated` for a new feature gate), tagged with the divergence it belongs to. Add a divergence entry only when none describes the feature."
+      },
+      {
+        "when": "Upstream adds a module or a config file.",
+        "then": "Nothing: P2.2-P2.3 drop it. The module list changes only by a maintainer decision, recorded in parameters, modules.list, module_wiring_contract and README.md together."
+      },
+      {
+        "when": "Kept code starts to need a crate that the Cargo.toml template lacks.",
+        "then": "Add it to the template in P7.1 (manifest_policy), update dependency_map and cargo_toml."
+      },
+      {
+        "when": "Built code does not compile against a crate that starshell pins behind upstream (dependency_versions).",
+        "then": "Add a translation rule to P6 in the manner of D03 and D04, or bump the crate under dependency_versions.when_a_bump_is_required."
+      },
+      {
+        "when": "self_tests T1 or T2 fail on the repository you started from.",
+        "then": "The mould and the repository were edited independently. Decide which one is right and change the other; never leave both."
+      }
+    ],
+    "manifest_policy": "Cargo.toml and build.rs are starshell's own files, written by P7 from templates; the Cargo.toml template carries `{upstream_version}`. Upstream's Cargo.toml is read for three things only: its version; changes to the requirement of a crate the template already lists (the pins that deliberately stay behind are in dependency_versions); and a crate that kept code newly needs. Features, Windows tables and crates.io metadata are never carried over (D10). Compare upstream's manifest between the baseline and the target with compare_commands.upstream_changes.",
+    "gates": [
+      {
+        "id": "G1",
+        "name": "cargo",
+        "check": "Run upstream_sync.verification.commands in the built tree, with the environment notes there. Include the wiring tests (module_wiring_contract) and `cargo fmt --check`.",
+        "passes_when": "Everything passes. Exception: a clippy diagnostic on a line that is identical in upstream's source of that release (a lint newer than upstream's toolchain) is upstream's own, not a mould error."
+      },
+      {
+        "id": "G2",
+        "name": "residue",
+        "check": "In the root of the built tree: grep -rnIE 'jj_repo|JJRepo|JJTester|\\bPreset\\b|preset_(command|list)|battery|BatteryInfo|directory_win|EffortInfo|HG_FIXTURE|FixtureProvider::(Fossil|Hg|Jujutsu|Pijul)|get_env_var_modules|context_path|render_time|humanize_int|encode_to_hex' src",
+        "passes_when": "It prints nothing. A hit is unshipped code that survived a cut (when_a_rule_does_not_apply)."
+      },
+      {
+        "id": "G3",
+        "name": "file set",
+        "check": "List the root, src/modules and src/configs of the built tree.",
+        "passes_when": "The root holds LICENSE, build.rs, Cargo.toml, src (and Cargo.lock after the first build). src/modules holds <name>.rs for each shipped module, mod.rs and utils/. src/configs holds <name>.rs for each shipped module, mod.rs and starship_root.rs."
+      }
+    ],
+    "self_tests": [
+      {
+        "id": "T1",
+        "name": "baseline reproduction",
+        "check": "Apply the mould to a clean copy of upstream release v<baseline.last_reconciled_release> and run `diff -r` on src/, Cargo.toml, build.rs and LICENSE against the repository.",
+        "passes_when": "Nothing is printed. Run it whenever the mould or one of those files changes, and at the new baseline after a port."
+      },
+      {
+        "id": "T2",
+        "name": "fixed point",
+        "check": "Copy the repository's src/, Cargo.toml, build.rs and LICENSE and apply the mould to the copy as if it were an upstream source, then `diff -r` the result against the repository.",
+        "passes_when": "Nothing is printed: every rule is idempotent and the repository holds no difference that the mould does not produce."
+      }
+    ],
+    "supported_range": "Release 1.26.0 and later. The rules and templates were derived from, and verified on, 1.26.0 and 1.27.0. Earlier releases are outside the range: their manifests need crates that the Cargo.toml template lacks and their kept code uses other crate APIs, so the built tree does not compile.",
+    "verified_on": [
+      {
+        "release": "1.27.0 (baseline)",
+        "result": "All 78 rules apply and P8 succeeds. src/, Cargo.toml, build.rs and LICENSE come out byte-identical to the repository (69 files). Applying the mould to the repository's own files changes nothing: 22 rules rewrite identical text and 56 are vacuous (self_tests T1 and T2)."
+      },
+      {
+        "release": "1.26.0",
+        "result": "44 rules apply and 34 are vacuous (code that 1.26.0 does not have, or already has in the required form); none fails. The result is formatted, builds and passes 403 tests; the 2 that fail (shows_stashed, shows_stashed_with_count_unless_reftable) need git >= 2.45 and the test machine had 2.43. `cargo clippy -D warnings` reports 16 diagnostics under rustc 1.97, every one on a line that is identical in upstream 1.26.0's own source."
+      },
+      {
+        "release": "1.27.0 with planted changes",
+        "result": "A new unshipped module wired in six places, battery-gated items, preset and env_var tests, comments attached to cut items and shifted lines were planted in the upstream source. The result equals the repository plus only the two unrelated helper functions that were planted outside every cut."
+      }
+    ]
   },
 
   "repository_layout": {
     "Cargo.toml": "package manifest, at repo root",
     "build.rs": "build script, at repo root, generates version/build metadata only",
     "src/": "all source code, directly under repo root",
-    "Cargo.lock": "generated by `cargo build`, not hand-maintained"
+    "Cargo.lock": "generated by `cargo build`, not hand-maintained",
+    "LICENSE": "ISC license text",
+    "README.md": "user-facing description of the project and its twelve modules",
+    "architecture.json": "this file"
   },
 
   "target_platform": {
     "os": "Linux only",
     "consequences": [
-      "No Windows-specific dependencies (deelevate, windows crate, winres) or code paths (modules/utils/directory_win.rs does not exist).",
-      "nix crate is a real, load-bearing dependency: used by modules/utils/directory_nix.rs, by git_status.rs's WSL-detection path, and by utils/mod.rs's read_file (non-blocking open via nix::fcntl).",
+      "No Windows-specific dependencies (deelevate, windows crate, winresource), build steps or files (modules/utils/directory_win.rs does not exist). #[cfg(windows)] blocks inside retained files are kept as upstream has them; they compile to nothing on Linux.",
+      "nix crate is a real, load-bearing dependency: used by modules/utils/directory_nix.rs, by git_status.rs's WSL-detection path, by username.rs's user lookup, and by utils/mod.rs's read_file (non-blocking open via nix::fcntl).",
       "All shell-init scripts are still shipped regardless of OS, because shell choice is a runtime CLI argument (`starshell init <shell>`), not a compile-time platform branch -- see init_system below."
     ]
   },
@@ -28,7 +1324,7 @@
   "core_engine": {
     "definition": "Everything in src/ except modules/*.rs and configs/*.rs. This is the part of the codebase that changes for reasons unrelated to which modules exist: CLI behavior, config parsing, prompt assembly, formatting, git/repo discovery infrastructure.",
     "files": {
-      "main.rs":       "Binary entry point. Defines the CLI (clap-based): subcommands for prompt rendering, module introspection, shell init/completions, config editing, config-schema output, bug-report. Imports the library crate as `starshell::...`.",
+      "main.rs":       "Binary entry point. Defines the CLI (clap-based) and dispatches it. Subcommands: prompt, module, explain, timings, time, session, init, completions, config, print-config, toggle, bug-report, statusline (the claude-code provider only), and config-schema (only built with the config-schema feature). There is no `preset` subcommand. Imports the library crate as `starshell::...`; the bin name and `about` text are starshell-specific.",
       "lib.rs":        "Library crate root. Declares all top-level modules, invokes shadow_rs's `shadow!` macro for build metadata (PKG_VERSION, CLAP_LONG_VERSION), and exposes thread-count helpers driven by the STARSHIP_NUM_THREADS env var.",
       "config.rs":     "Loads and parses starship.toml. Exposes get_custom_modules() for reading the [custom.*] table, and generic get_config()/get_module_config() lookups used throughout.",
       "context.rs":    "The Context struct: current directory, environment snapshot, shell/target info, and the core git repo-discovery machinery (gix-based GitRepo/get_git_repo(), shared by directory.rs, custom.rs's require_repo option, and every git_* module). GitRepo records the repository's trust level (gix git_dir_trust): exec_git runs the git executable only in fully trusted repositories, exec_git_with_required_trust lets a caller accept reduced trust for fixed ref queries that cannot run repository-configured filters or hooks, and use_git_executable()/uses_reftables() decide when git_status/git_branch may shell out to git at all (at reduced trust git_status falls back to gix). Also owns the generic detect_env_vars/detect_env_vars2 mechanism used by username and python to conditionally activate based on environment variables being present -- this is unrelated to any module named 'env_var'; no such module exists in this project.",
@@ -40,9 +1336,12 @@
       "configure.rs":  "Implements `starshell config` (opening the config file in $EDITOR) and related config-editing subcommands.",
       "formatter/":    "The format-string parser and renderer. spec.pest defines the grammar; string_formatter.rs and parser.rs implement it; version.rs provides shared version-string formatting used by python (via versions crate) and time.",
       "init/":         "Shell integration. init/mod.rs unconditionally embeds every script in this directory via include_str!() and dispatches by the CompletionShell enum / Commands::Init match arms in main.rs -- see init_system.critical_invariant below.",
-      "utils/":        "Command execution (create_command, exec_cmd, mock_cmd for tests), bounded file reading (read_file: regular files only, 100 MiB cap, non-blocking open), custom serde deserializer enforcing the allowed top-level TOML key set, path/statusline helpers.",
+      "utils/":        "utils/mod.rs: command execution (create_command, exec_cmd, mock_cmd for tests), bounded file reading (read_file: regular files only, 100 MiB cap, non-blocking open), write_file / write_file_atomic, shell escape-sequence wrapping, home_dir. utils/env.rs: the Env wrapper over environment variables, with a HashMap mock under cfg(test). utils/serde.rs: custom serde deserializer enforcing the allowed top-level TOML key set. utils/statusline.rs: the Claude Code statusline JSON structs.",
       "segment.rs":    "Styled text segment primitive used by every module's rendering output.",
       "logger.rs":     "Log level / log file setup.",
+      "modules/utils/": "Helpers shared by shipped modules: directory.rs (path truncation), directory_nix.rs (write-permission check via nix, for the directory module's read-only symbol), path.rs (PathExt). No directory_win.rs, format.rs or truncate.rs -- see upstream_sync D05, D07.",
+      "statusline": "Claude Code status line support, spread over several files: `starshell statusline claude-code` (main.rs) calls print::prompt_with_claude_code, which deserializes Claude Code's JSON from stdin into utils/statusline.rs's ClaudeCodeData (all structs #[serde(default)], unknown keys ignored), stores it in Context.claude_code_data (context.rs), and renders the profile named `claude-code` from configs/starship_root.rs (default `$git_branch`). No shipped module reads claude_code_data.",
+      "test/": "Test-only support (mod.rs): ModuleRenderer, default_context(), git fixture repositories built from the .bundle files in test/fixtures/, and the git trust-level builder. Only built under cfg(test).",
       "bug_report.rs": "Implements `starshell bug-report`; the only consumer of the urlencoding crate and one of several consumers of os_info (for OS/version info in the report body, independent of whether the os module is enabled)."
     }
   },
@@ -182,7 +1481,7 @@
       "jiff": ["configs/time.rs", "modules/time.rs"],
       "log": ["most of src/ -- general logging"],
       "nu-ansi-term": ["bug_report.rs", "config.rs", "formatter/string_formatter.rs", "logger.rs", "main.rs", "module.rs", "print.rs", "segment.rs", "and most modules for styled output"],
-      "open": ["bug_report.rs", "context.rs"],
+      "open": ["bug_report.rs"],
       "os_info": ["bug_report.rs", "configs/os.rs", "modules/os.rs"],
       "parking_lot": ["modules/git_status.rs"],
       "path-slash": ["modules/directory.rs"],
@@ -206,11 +1505,12 @@
       "versions": ["formatter/version.rs"],
       "which": ["init/mod.rs", "utils/mod.rs"],
       "whoami": ["modules/username.rs"],
-      "nix": ["context.rs", "modules/directory.rs", "modules/git_status.rs", "modules/username.rs", "modules/utils/directory_nix.rs", "utils/mod.rs"]
+      "mockall": ["(dev-dependency; no file in src/ references it)"],
+      "nix": ["modules/git_status.rs", "modules/username.rs", "modules/utils/directory_nix.rs", "utils/mod.rs"]
     },
     "not_present": {
       "description": "Crates absent from Cargo.toml because nothing in this tree references them. Re-adding a module that needs one of these means re-adding the crate too.",
-      "examples": ["guess_host_triple", "home", "jsonc-parser", "notify-rust", "quick-xml", "semver", "sha1", "systemstat", "yaml-rust2", "starship-battery", "deelevate", "windows (crate)", "winres"]
+      "examples": ["guess_host_triple", "home", "jsonc-parser", "notify-rust", "quick-xml", "semver", "sha1", "systemstat", "yaml-rust2", "starship-battery", "deelevate", "windows (crate)", "winresource"]
     }
   },
 
@@ -224,7 +1524,7 @@
   "runtime_protocol": {
     "description": "User-facing names and file conventions, deliberately kept identical to upstream Starship for drop-in compatibility with existing shell configurations, independent of the starshell package/binary rename.",
     "config_file": "starship.toml, located via the STARSHIP_CONFIG environment variable or the platform default config path.",
-    "environment_variables": ["STARSHIP_CONFIG", "STARSHIP_NUM_THREADS", "and others read via context.rs's generic env-var accessors"],
+    "environment_variables": ["STARSHIP_CONFIG", "STARSHIP_NUM_THREADS", "STARSHIP_SHELL", "STARSHIP_SESSION_KEY", "STARSHIP_LOG", "STARSHIP_CACHE"],
     "cli_program_name": "starshell (the compiled binary name and the name embedded into generated shell completions -- this one detail was changed from upstream, everything else in this section was not)"
   },
 
